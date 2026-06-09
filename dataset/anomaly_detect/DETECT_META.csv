@@ -1909,3 +1909,4 @@ KR_text.csv,,,,,,Financial, 2124,,FALSE,mult_new_new,,2655,0.8
 EWJ_text.csv,,,,,,Financial, 2126,,FALSE,mult_new_new,,2658,0.8
 MDT_text.csv,,,,,,Financial, 2186,,FALSE,mult_new_new,,2732,0.8
 Energy_text.csv,,,,,,Energy,1297,,FALSE,mult_new_new,,1622,0.8
+TT.csv,FALSE,FALSE,FALSE,FALSE,TRUE,TT,1622,7443,FALSE,large,microservice_metrics,7443,0.217923
