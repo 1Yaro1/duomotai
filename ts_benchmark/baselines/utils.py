@@ -309,6 +309,16 @@ class MultiSegLoader(object):
         self.text = text
         self.test_labels = data
 
+    def _window_text(self, start, end):
+        text_data = (
+            self.text[start:end]
+            .iloc[:, 0]
+            .fillna("")
+            .astype(str)
+            .to_list()
+        )
+        return " ".join(text_data).strip()
+
     def __len__(self):
         """
         Number of images in the object dataset.
@@ -328,8 +338,7 @@ class MultiSegLoader(object):
             train_data = np.float32(self.data[index:index + self.win_size])
             train_label = np.float32(self.test_labels[0:self.win_size])
 
-            text_data = (self.text[index:index + self.win_size].iloc[:, 0]).to_list()
-            long_text = " ".join(text_data)
+            long_text = self._window_text(index, index + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
             tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
@@ -342,8 +351,7 @@ class MultiSegLoader(object):
             val_data = np.float32(self.data[index:index + self.win_size])
             val_label = np.float32(self.test_labels[0:self.win_size])
 
-            text_data = (self.text[index:index + self.win_size].iloc[:, 0]).to_list()
-            long_text = " ".join(text_data)
+            long_text = self._window_text(index, index + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
             tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
@@ -356,8 +364,7 @@ class MultiSegLoader(object):
             test_data = np.float32(self.data[index:index + self.win_size])
             test_label = np.float32(self.test_labels[0:self.win_size])
 
-            text_data = (self.text[index:index + self.win_size].iloc[:, 0]).to_list()
-            long_text = " ".join(text_data)
+            long_text = self._window_text(index, index + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
             tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
@@ -369,8 +376,8 @@ class MultiSegLoader(object):
         else:
             test_data = np.float32(self.data[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
             test_label = np.float32(self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
-            text_data = (self.text[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size].iloc[:, 0]).to_list()
-            long_text = " ".join(text_data)
+            text_start = index // self.step * self.win_size
+            long_text = self._window_text(text_start, text_start + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
             tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")

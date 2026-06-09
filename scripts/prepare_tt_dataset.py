@@ -357,7 +357,7 @@ def parse_args():
     )
     parser.add_argument(
         "--text-placeholder",
-        default="blank",
+        default=".",
         help="Placeholder token for the intentionally empty text dataset.",
     )
     return parser.parse_args()
