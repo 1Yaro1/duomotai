@@ -1,0 +1,6 @@
+ M scripts/multivariate_detection/detect_label/TT_script/MindTS.sh
+ M ts_benchmark/baselines/MindTS/models/MindTS_model.py
+ M ts_benchmark/baselines/utils.py
+?? docs/tt_result_reproduction.md
+?? result/
+?? scripts/run_tt_with_monitor.sh

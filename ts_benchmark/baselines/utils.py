@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+#max_lenth从1024改为512，考虑到文本长度和模型输入限制
 from typing import Tuple
 import time
 
@@ -341,7 +342,7 @@ class MultiSegLoader(object):
             long_text = self._window_text(index, index + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
+            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
             input_ids = tokens["input_ids"].squeeze(0)
             attention_mask = tokens["attention_mask"].squeeze(0)
 
@@ -354,7 +355,7 @@ class MultiSegLoader(object):
             long_text = self._window_text(index, index + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
+            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
             input_ids = tokens["input_ids"].squeeze(0)
             attention_mask = tokens["attention_mask"].squeeze(0)
 
@@ -367,7 +368,7 @@ class MultiSegLoader(object):
             long_text = self._window_text(index, index + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
+            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
             input_ids = tokens["input_ids"].squeeze(0)
             attention_mask = tokens["attention_mask"].squeeze(0)
 
@@ -380,7 +381,7 @@ class MultiSegLoader(object):
             long_text = self._window_text(text_start, text_start + self.win_size)
             if tokenizer.pad_token is None:
                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
+            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
             input_ids = tokens["input_ids"].squeeze(0)
             attention_mask = tokens["attention_mask"].squeeze(0)
 

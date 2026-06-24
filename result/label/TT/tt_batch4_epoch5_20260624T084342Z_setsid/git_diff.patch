@@ -1,0 +1,178 @@
+diff --git a/scripts/multivariate_detection/detect_label/TT_script/MindTS.sh b/scripts/multivariate_detection/detect_label/TT_script/MindTS.sh
+index dc92d33..e9c675f 100644
+--- a/scripts/multivariate_detection/detect_label/TT_script/MindTS.sh
++++ b/scripts/multivariate_detection/detect_label/TT_script/MindTS.sh
+@@ -1 +1,26 @@
+-python ./scripts/run_benchmark.py --config-path "unfixed_detect_label_multi_config.json" --data-name-list "TT.csv" --model-name "MindTS.MindTS" --model-hyper-params '{"batch_size": 4, "d_ff": 8, "d_model": 256, "e_layers": 1, "horizon": 0, "norm": true, "num_epochs": 1, "seq_len": 24, "patch_size": 6, "stride": 6, "mask_ratio": 0.4, "r":0.5, "enc_in_time": 189, "parallel_strategy": "DP"}' --gpus 0 --num-workers 1 --timeout 60000 --save-path "label/TT" --text-name-list "TT_text.csv"
++#!/bin/bash
++python ./scripts/run_benchmark.py \
++  --config-path "unfixed_detect_label_multi_config.json" \
++  --data-name-list "TT.csv" \
++  --model-name "MindTS.MindTS" \
++  --model-hyper-params '{
++    "batch_size": 4,
++    "d_ff": 8,
++    "d_model": 256,
++    "e_layers": 1,
++    "horizon": 0,
++    "norm": true,
++    "num_epochs": 5,
++    "seq_len": 24,
++    "patch_size": 6,
++    "stride": 6,
++    "mask_ratio": 0.4,
++    "r": 0.5,
++    "enc_in_time": 189,
++    "parallel_strategy": "DP"
++  }' \
++  --gpus 0 \
++  --num-workers 0 \
++  --timeout 60000 \
++  --save-path "label/TT" \
++  --text-name-list "TT_text.csv"
+diff --git a/ts_benchmark/baselines/MindTS/models/MindTS_model.py b/ts_benchmark/baselines/MindTS/models/MindTS_model.py
+index 0c7a6bf..b0bf078 100644
+--- a/ts_benchmark/baselines/MindTS/models/MindTS_model.py
++++ b/ts_benchmark/baselines/MindTS/models/MindTS_model.py
+@@ -8,10 +8,10 @@ from ts_benchmark.baselines.MindTS.layers.Embed import WarriorsEmbedding, DataEm
+ from ts_benchmark.baselines.MindTS.layers.Transformer_EncDec import Encoder, EncoderLayer
+ from ts_benchmark.baselines.MindTS.layers.SelfAttention_Family import FullAttention, AttentionLayer
+ from einops import rearrange
+-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
++from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig,AutoModel
+
+
+-DEEPSEEK_PATH = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
++DEEPSEEK_PATH = "Qwen/Qwen2.5-0.5B"
+ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+@@ -103,13 +103,23 @@ class MINDTSModel(nn.Module):
+         self.d_model = configs.d_model
+         self.channel_time = configs.enc_in_time    # Number of input time channels
+         self.mask_ratio = configs.mask_ratio   # Masking ratio for sequence
++        self.llm_layers = 6
++
++        # Load LLM config
++        self.deepseek_config = AutoConfig.from_pretrained(DEEPSEEK_PATH,
++                                                          trust_remote_code=True)
++        self.deepseek_config.num_hidden_layers = self.llm_layers
++        self.deepseek_config.output_attentions = False
++        self.deepseek_config.output_hidden_states = False
++        # MindTS 后面其实不用 attention。output_attentions=True 会让 Qwen2 退回更吃显存的 attention 实现，建议关掉。
++        self.llm_hidden_size = self.deepseek_config.hidden_size
+
+         # Embedding layers
+         self.windows_data_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq, configs.dropout)
+         self.proj_patch = nn.Linear(self.patch_num * configs.d_model, configs.seq_len, bias=True)
+-        self.prompt_proj_hidden = nn.Linear(1536, configs.d_model, bias=True)
+-        self.text_proj_hidden = nn.Linear(1536, configs.d_model, bias=True)
+-        self.proj_text = nn.Linear(1024 * configs.d_model, configs.d_model, bias=True)
++        self.prompt_proj_hidden = nn.Linear(self.llm_hidden_size, configs.d_model, bias=True)
++        self.text_proj_hidden = nn.Linear(self.llm_hidden_size, configs.d_model, bias=True)
++        self.proj_text = nn.Linear(256 * configs.d_model, configs.d_model, bias=True)
+         self.proj_prompt = nn.Linear(128 * configs.d_model, configs.d_model, bias=True)
+         self.patch_embedding = WarriorsEmbedding(configs.d_model, self.patch_size, self.stride, self.stride, configs.dropout)
+
+@@ -148,15 +158,17 @@ class MINDTSModel(nn.Module):
+         self.top_k = self.patch_size    # Top-k value for selection
+         self.d_ff = configs.d_ff    # Feedforward hidden dimension
+         self.num_heads = configs.n_heads    # Number of attention heads
+-        self.llm_layers = 6
+
+-        # Load LLM config
+-        self.deepseek_config = AutoConfig.from_pretrained(DEEPSEEK_PATH)
+-        self.deepseek_config.num_hidden_layers = self.llm_layers
+-        self.deepseek_config.output_attentions = True
+-        self.deepseek_config.output_hidden_states = True
+         self.tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True)
+-        self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config)
++        #self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config)
++        self.model = AutoModel.from_pretrained(
++            DEEPSEEK_PATH,
++            trust_remote_code=True,
++            config=self.deepseek_config,
++            torch_dtype=torch.float16,
++            )
++        for param in self.model.parameters():
++            param.requires_grad = False
+         self.transformer_block = TransformerBlock(self.d_model, self.num_heads, self.d_ff)
+         self.multimodal_Transformer_Block = MultiTransformerBlock(self.d_model, self.num_heads, self.d_ff)
+         self.prob_net = nn.Sequential(nn.PReLU(), nn.Linear(configs.d_model, 1), nn.Sigmoid())
+@@ -266,9 +278,9 @@ class MINDTSModel(nn.Module):
+             outputs = self.model(
+                 input_ids=input_ids,
+                 attention_mask=attention_mask,
+-                output_hidden_states=True
+-            )
+-            embeddings = outputs.hidden_states[-1]
++                return_dict=True
++                )
++            embeddings = outputs.last_hidden_state
+             embeddings = embeddings.detach()
+
+         del input_ids, attention_mask, outputs
+@@ -290,15 +302,15 @@ class MINDTSModel(nn.Module):
+             outputs = self.model(
+                 input_ids=x_enc_input_ids.long(),
+                 attention_mask=x_enc_attention_mask.long(),
+-                output_hidden_states=True
++                return_dict=True
+             )
+-            embeddings = outputs.hidden_states[-1]
++            embeddings = outputs.last_hidden_state
+             embeddings = embeddings.detach()
+
+         text_features = embeddings.to(torch.float32)
+
+         text_features = self.prompt_proj_hidden(text_features)
+-        text_features = rearrange(text_features, 'b m h -> b (m h)', m = 1024, h = self.d_model)
++        text_features = rearrange(text_features, 'b m h -> b (m h)', m = 256, h = self.d_model)
+         text_features = text_features.unsqueeze(1)
+         text_features = self.proj_text(text_features)
+         text_features = text_features.repeat(self.channel_time, 1, 1)
+diff --git a/ts_benchmark/baselines/utils.py b/ts_benchmark/baselines/utils.py
+index 98d14b2..881831b 100644
+--- a/ts_benchmark/baselines/utils.py
++++ b/ts_benchmark/baselines/utils.py
+@@ -1,4 +1,5 @@
+ # -*- coding: utf-8 -*-
++#max_lenth从1024改为512，考虑到文本长度和模型输入限制
+ from typing import Tuple
+ import time
+
+@@ -341,7 +342,7 @@ class MultiSegLoader(object):
+             long_text = self._window_text(index, index + self.win_size)
+             if tokenizer.pad_token is None:
+                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
++            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
+             input_ids = tokens["input_ids"].squeeze(0)
+             attention_mask = tokens["attention_mask"].squeeze(0)
+
+@@ -354,7 +355,7 @@ class MultiSegLoader(object):
+             long_text = self._window_text(index, index + self.win_size)
+             if tokenizer.pad_token is None:
+                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
++            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
+             input_ids = tokens["input_ids"].squeeze(0)
+             attention_mask = tokens["attention_mask"].squeeze(0)
+
+@@ -367,7 +368,7 @@ class MultiSegLoader(object):
+             long_text = self._window_text(index, index + self.win_size)
+             if tokenizer.pad_token is None:
+                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
++            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
+             input_ids = tokens["input_ids"].squeeze(0)
+             attention_mask = tokens["attention_mask"].squeeze(0)
+
+@@ -380,7 +381,7 @@ class MultiSegLoader(object):
+             long_text = self._window_text(text_start, text_start + self.win_size)
+             if tokenizer.pad_token is None:
+                 tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+-            tokens = tokenizer(long_text, max_length=1024, padding="max_length", truncation=True, return_tensors="pt")
++            tokens = tokenizer(long_text, max_length=256, padding="max_length", truncation=True, return_tensors="pt")
+             input_ids = tokens["input_ids"].squeeze(0)
+             attention_mask = tokens["attention_mask"].squeeze(0)
