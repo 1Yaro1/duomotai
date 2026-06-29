@@ -10,6 +10,7 @@ MON_LOG="${RUN_DIR}/monitor.log"
 SUMMARY_LOG="${RUN_DIR}/summary.log"
 SCRIPT_SNAPSHOT="${RUN_DIR}/MindTS.sh.snapshot"
 CONFIG_SNAPSHOT="${RUN_DIR}/unfixed_detect_label_multi_config.json.snapshot"
+TEXT_SNAPSHOT="${RUN_DIR}/TT_text_empty.csv.snapshot"
 GIT_STATUS_SNAPSHOT="${RUN_DIR}/git_status.txt"
 GIT_DIFF_SNAPSHOT="${RUN_DIR}/git_diff.patch"
 
@@ -17,9 +18,11 @@ mkdir -p "${RUN_DIR}"
 
 cp scripts/multivariate_detection/detect_label/TT_script/MindTS.sh "${SCRIPT_SNAPSHOT}" 2>/dev/null || true
 cp config/unfixed_detect_label_multi_config.json "${CONFIG_SNAPSHOT}" 2>/dev/null || true
+cp dataset/anomaly_detect/data/TT_text_empty.csv "${TEXT_SNAPSHOT}" 2>/dev/null || true
 git status --short > "${GIT_STATUS_SNAPSHOT}" 2>/dev/null || true
 git diff -- scripts/multivariate_detection/detect_label/TT_script/MindTS.sh \
   ts_benchmark/baselines/MindTS/models/MindTS_model.py \
+  ts_benchmark/baselines/MindTS/MindTS.py \
   ts_benchmark/baselines/utils.py \
   scripts/run_tt_with_monitor.sh \
   docs/tt_result_reproduction.md > "${GIT_DIFF_SNAPSHOT}" 2>/dev/null || true
@@ -31,6 +34,7 @@ git diff -- scripts/multivariate_detection/detect_label/TT_script/MindTS.sh \
   echo "SCRIPT=scripts/multivariate_detection/detect_label/TT_script/MindTS.sh"
   echo "SCRIPT_SNAPSHOT=${SCRIPT_SNAPSHOT}"
   echo "CONFIG_SNAPSHOT=${CONFIG_SNAPSHOT}"
+  echo "TEXT_SNAPSHOT=${TEXT_SNAPSHOT}"
   echo "GIT_STATUS_SNAPSHOT=${GIT_STATUS_SNAPSHOT}"
   echo "GIT_DIFF_SNAPSHOT=${GIT_DIFF_SNAPSHOT}"
   echo "CMD=PATH=/home/xuke/dyao/duomotai/.venv/bin:\$PATH PYTHONUNBUFFERED=1 bash scripts/multivariate_detection/detect_label/TT_script/MindTS.sh"

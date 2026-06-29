@@ -8,7 +8,7 @@ from ts_benchmark.baselines.MindTS.layers.Embed import WarriorsEmbedding, DataEm
 from ts_benchmark.baselines.MindTS.layers.Transformer_EncDec import Encoder, EncoderLayer
 from ts_benchmark.baselines.MindTS.layers.SelfAttention_Family import FullAttention, AttentionLayer
 from einops import rearrange
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, AutoModel
+from transformers import AutoTokenizer, AutoConfig, AutoModel
 
 
 DEEPSEEK_PATH = "Qwen/Qwen2.5-0.5B"
@@ -104,6 +104,9 @@ class MINDTSModel(nn.Module):
         self.channel_time = configs.enc_in_time    # Number of input time channels
         self.mask_ratio = configs.mask_ratio   # Masking ratio for sequence
         self.llm_layers = 6
+        self.use_text = getattr(configs, "use_text", True)
+        self.use_time_prompt = getattr(configs, "use_time_prompt", True)
+        self.use_llm = self.use_text or self.use_time_prompt
 
         # Load LLM config
         self.deepseek_config = AutoConfig.from_pretrained(DEEPSEEK_PATH,
@@ -121,6 +124,7 @@ class MINDTSModel(nn.Module):
         self.text_proj_hidden = nn.Linear(self.llm_hidden_size, configs.d_model, bias=True)
         self.proj_text = nn.Linear(256 * configs.d_model, configs.d_model, bias=True)
         self.proj_prompt = nn.Linear(128 * configs.d_model, configs.d_model, bias=True)
+        self.null_prompt = nn.Parameter(torch.zeros(1, self.patch_num, configs.d_model))
         self.patch_embedding = WarriorsEmbedding(configs.d_model, self.patch_size, self.stride, self.stride, configs.dropout)
 
         # Time patch encoder with stacked attention layers
@@ -159,16 +163,19 @@ class MINDTSModel(nn.Module):
         self.d_ff = configs.d_ff    # Feedforward hidden dimension
         self.num_heads = configs.n_heads    # Number of attention heads
 
-        self.tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True)
-        #self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config)
-        self.model = AutoModel.from_pretrained(
-            DEEPSEEK_PATH,
-            trust_remote_code=True,
-            config=self.deepseek_config,
-            torch_dtype=torch.float16,
-            )
-        for param in self.model.parameters():
-            param.requires_grad = False
+        if self.use_llm:
+            self.tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True)
+            self.model = AutoModel.from_pretrained(
+                DEEPSEEK_PATH,
+                trust_remote_code=True,
+                config=self.deepseek_config,
+                torch_dtype=torch.float16,
+                )
+            for param in self.model.parameters():
+                param.requires_grad = False
+        else:
+            self.tokenizer = None
+            self.model = None
         self.transformer_block = TransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.multimodal_Transformer_Block = MultiTransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.prob_net = nn.Sequential(nn.PReLU(), nn.Linear(configs.d_model, 1), nn.Sigmoid())
@@ -198,25 +205,8 @@ class MINDTSModel(nn.Module):
         corr = torch.fft.irfft(res, dim=-1)
         _, lags = torch.topk(corr, self.top_k, dim=-1)
         return lags
-    
-    
-    def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask):
-        # -------------------------------------------------------------Input data normalization--------------------------------------------------------------------
-        means = x_enc_time.mean(1, keepdim=True).detach()
-        x_enc_time = x_enc_time - means
-        stdev = torch.sqrt(torch.var(x_enc_time, dim=1, keepdim=True, unbiased=False) + 1e-5)
-        x_enc_time /= stdev
-        B, T, N = x_enc_time.size()
 
-        # -------------------------------------------------------------Series patching and masking-----------------------------------------------------------------
-        x_enc_time_patch_normal, _ = self.patch_embedding(x_enc_time.permute(0, 2, 1))
-        x_enc_time_patch_mask, _, _, _ = self.random_masking(x_enc_time_patch_normal, self.mask_ratio)
-
-        # -------------------------------------------------------------Time Encoder--------------------------------------------------------------------------------
-        time_features_patch_normal, attns = self.time_patch_encoder(x_enc_time_patch_normal)    #[B*C, N, D]
-        time_features_patch_mask, attns = self.time_patch_encoder(x_enc_time_patch_mask)    #[B*C, N, D]
-
-        # -------------------------------------------------------------prompt Generation --------------------------------------------------------------------------
+    def build_time_prompt_feature(self, x_enc_time):
         x_enc_time = x_enc_time.permute(0, 2, 1).contiguous()
         x_enc_time = rearrange(x_enc_time, 'b c l -> (b c) l')
         x_enc_time = x_enc_time.unfold(1, self.patch_size, self.stride) # (B * N, Patch_num, Patch_size)
@@ -267,8 +257,7 @@ class MINDTSModel(nn.Module):
                 )
                 prompt.append(prompt_)
             prompt_list.append(prompt)
-        
-        # -------------------------------------------------------------prompt Reasoning---------------------------------------------------------------------------
+
         all_prompts = [prompt for batch in prompt_list for prompt in batch]
         prompt_tokens = self.tokenizer(all_prompts, max_length=128, padding="max_length", truncation=True, return_tensors="pt")
         input_ids = prompt_tokens["input_ids"].to(self.device)
@@ -281,11 +270,10 @@ class MINDTSModel(nn.Module):
                 return_dict=True
                 )
             embeddings = outputs.last_hidden_state
-            embeddings = embeddings.detach() 
+            embeddings = embeddings.detach()
 
         del input_ids, attention_mask, outputs
 
-        total_prompts = len(all_prompts)
         batch_size_prompt = len(prompt_list[0])
         all_embeddings = embeddings.view(-1, batch_size_prompt, embeddings.size(1), embeddings.size(2))
         all_embeddings = all_embeddings.squeeze(2)
@@ -295,49 +283,81 @@ class MINDTSModel(nn.Module):
 
         prompt_feature = self.prompt_proj_hidden(prompt_feature)
         prompt_feature = rearrange(prompt_feature, 'v n m d -> v n (m d)', n = self.patch_num, m = 128, d = self.d_model)
-        prompt_feature = self.proj_prompt(prompt_feature)      
+        prompt_feature = self.proj_prompt(prompt_feature)
+        return prompt_feature
 
-        # -------------------------------------------------------------text Reasoning------------------------------------------------------------------------------
-        with torch.no_grad():
-            outputs = self.model(
-                input_ids=x_enc_input_ids.long(),
-                attention_mask=x_enc_attention_mask.long(),
-                return_dict=True
-            )
-            embeddings = outputs.last_hidden_state
-            embeddings = embeddings.detach()
+    def build_null_prompt_feature(self, batch_channel_size):
+        return self.null_prompt.expand(batch_channel_size, -1, -1)
 
-        text_features = embeddings.to(torch.float32)
+    def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask):
+        # -------------------------------------------------------------Input data normalization--------------------------------------------------------------------
+        means = x_enc_time.mean(1, keepdim=True).detach()
+        x_enc_time = x_enc_time - means
+        stdev = torch.sqrt(torch.var(x_enc_time, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_enc_time /= stdev
+        B, T, N = x_enc_time.size()
 
-        text_features = self.prompt_proj_hidden(text_features)
-        text_features = rearrange(text_features, 'b m h -> b (m h)', m = 256, h = self.d_model)
-        text_features = text_features.unsqueeze(1)
-        text_features = self.proj_text(text_features)
-        text_features = text_features.repeat(self.channel_time, 1, 1) 
+        # -------------------------------------------------------------Series patching and masking-----------------------------------------------------------------
+        x_enc_time_patch_normal, _ = self.patch_embedding(x_enc_time.permute(0, 2, 1))
+        x_enc_time_patch_mask, _, _, _ = self.random_masking(x_enc_time_patch_normal, self.mask_ratio)
 
-        # -------------------------------------------------------------prompt and textCross-view Attention--------------------------------------------------------
-        llm_features = self.transformer_block(prompt_feature, text_features)
+        # -------------------------------------------------------------Time Encoder--------------------------------------------------------------------------------
+        time_features_patch_normal, attns = self.time_patch_encoder(x_enc_time_patch_normal)    #[B*C, N, D]
+        time_features_patch_mask, attns = self.time_patch_encoder(x_enc_time_patch_mask)    #[B*C, N, D]
 
-        # -------------------------------------------------------------time-text Similarity matrix----------------------------------------------------------------
-        time_norm = F.normalize(time_features_patch_normal, p=2, dim=-1)
-        llm_norm = F.normalize(llm_features, p=2, dim=-1)
-        logit_scale = self.logit_scale.exp()
-        logits_per_time = logit_scale * torch.bmm(time_norm, llm_norm.transpose(1, 2))
-        logits_per_text = logits_per_time.transpose(1, 2)
+        if self.use_text:
+            # -------------------------------------------------------------prompt Feature--------------------------------------------------------------------------
+            if self.use_time_prompt:
+                prompt_feature = self.build_time_prompt_feature(x_enc_time)
+            else:
+                prompt_feature = self.build_null_prompt_feature(time_features_patch_normal.shape[0])
 
-        # -------------------------------------------------------------Information Condenser----------------------------------------------------------------------
-        total_mask = self.prob_net(llm_features)
-        if total_mask.shape[-1] == 1:
-            inv_probs = 1 - total_mask
-            total_mask_prob = torch.cat([inv_probs, total_mask], dim=-1)
+            # -------------------------------------------------------------text Reasoning--------------------------------------------------------------------------
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=x_enc_input_ids.long(),
+                    attention_mask=x_enc_attention_mask.long(),
+                    return_dict=True
+                )
+                embeddings = outputs.last_hidden_state
+                embeddings = embeddings.detach()
+
+            text_features = embeddings.to(torch.float32)
+
+            text_features = self.prompt_proj_hidden(text_features)
+            text_features = rearrange(text_features, 'b m h -> b (m h)', m = 256, h = self.d_model)
+            text_features = text_features.unsqueeze(1)
+            text_features = self.proj_text(text_features)
+            text_features = text_features.repeat(self.channel_time, 1, 1)
+
+            # -------------------------------------------------------------prompt and textCross-view Attention----------------------------------------------------
+            llm_features = self.transformer_block(prompt_feature, text_features)
+
+            # -------------------------------------------------------------time-text Similarity matrix------------------------------------------------------------
+            time_norm = F.normalize(time_features_patch_normal, p=2, dim=-1)
+            llm_norm = F.normalize(llm_features, p=2, dim=-1)
+            logit_scale = self.logit_scale.exp()
+            logits_per_time = logit_scale * torch.bmm(time_norm, llm_norm.transpose(1, 2))
+            logits_per_text = logits_per_time.transpose(1, 2)
+
+            # -------------------------------------------------------------Information Condenser------------------------------------------------------------------
+            total_mask = self.prob_net(llm_features)
+            if total_mask.shape[-1] == 1:
+                inv_probs = 1 - total_mask
+                total_mask_prob = torch.cat([inv_probs, total_mask], dim=-1)
+            else:
+                total_mask_prob = total_mask.softmax(dim=-1)
+            total_mask_reparameterize = torch.nn.functional.gumbel_softmax(torch.log(total_mask_prob + 1e-6), tau = 1, hard = True)[...,1]
+            total_mask_reparameterize = total_mask_reparameterize.unsqueeze(-1)
+            llm_features = total_mask_reparameterize * llm_features
+
+            # -------------------------------------------------------------Reconstruction-------------------------------------------------------------------------
+            multi_features = self.multimodal_Transformer_Block(llm_features, time_features_patch_mask)
         else:
-            total_mask_prob = total_mask.softmax(dim=-1)
-        total_mask_reparameterize = torch.nn.functional.gumbel_softmax(torch.log(total_mask_prob + 1e-6), tau = 1, hard = True)[...,1]
-        total_mask_reparameterize = total_mask_reparameterize.unsqueeze(-1)
-        llm_features = total_mask_reparameterize * llm_features      
-
-        # -------------------------------------------------------------Reconstruction-----------------------------------------------------------------------------
-        multi_features = self.multimodal_Transformer_Block(llm_features, time_features_patch_mask)
+            logits_per_time = None
+            logits_per_text = None
+            total_mask = None
+            multi_features = time_features_patch_mask
         output = rearrange(multi_features, '(b c) n d -> (b c) (n d)', c = self.channel_time, n = self.patch_num, d = self.d_model)
         output = self.proj_patch(output)
         output = rearrange(output, '(b c) t -> b t c', t = self.seq_len, c = self.channel_time)

@@ -60,6 +60,8 @@ DEFAULT_MINDTS_BASED_HYPER_PARAMS = {
     "r": 0.5,
     "lamda": 1.0,
     "enc_in_time": 1,
+    "use_text": True,
+    "use_time_prompt": True,
     "lamda1": 1.0,
     "lamda2": 1.0
 }
@@ -194,13 +196,16 @@ class MindTS:
                 # Reconstruction loss
                 loss1 = criterion(outputs, true).detach().cpu().numpy()
 
-                # Comparison Loss
-                loss2 = clip_loss(logits_per_time, logits_per_text).detach().cpu().numpy()
-                    
-                # Bottleneck loss
-                loss3 = Bottleneck_loss(total_mask, self.config.r, self.config.lamda).detach().cpu().numpy()
+                if self.config.use_text:
+                    # Comparison Loss
+                    loss2 = clip_loss(logits_per_time, logits_per_text).detach().cpu().numpy()
 
-                loss = loss1 + self.lamda1*loss2 + self.lamda2*loss3
+                    # Bottleneck loss
+                    loss3 = Bottleneck_loss(total_mask, self.config.r, self.config.lamda).detach().cpu().numpy()
+
+                    loss = loss1 + self.lamda1*loss2 + self.lamda2*loss3
+                else:
+                    loss = loss1
                 total_loss.append(loss)  
 
         total_loss = np.mean(total_loss)
@@ -365,13 +370,16 @@ class MindTS:
                 # Reconstruction loss
                 loss1 = criterion(outputs, batch_x_time)
 
-                # Comparison Loss
-                loss2 = clip_loss(logits_per_time, logits_per_text)
+                if self.config.use_text:
+                    # Comparison Loss
+                    loss2 = clip_loss(logits_per_time, logits_per_text)
 
-                # Bottleneck loss
-                loss3 = Bottleneck_loss(total_mask, self.config.r, self.config.lamda)
+                    # Bottleneck loss
+                    loss3 = Bottleneck_loss(total_mask, self.config.r, self.config.lamda)
 
-                loss = loss1 + self.lamda1*loss2 + self.lamda2*loss3
+                    loss = loss1 + self.lamda1*loss2 + self.lamda2*loss3
+                else:
+                    loss = loss1
 
                 if (i + 1) % 10 == 0:
                     print("\titers: {0}, epoch: {1}".format(i + 1, epoch + 1))
