@@ -17,12 +17,12 @@ python ./scripts/run_benchmark.py \
     "mask_ratio": 0.4,
     "r": 0.5,
     "enc_in_time": 189,
-    "use_text": false,
-    "use_time_prompt": false,
+    "use_text": true,
+    "use_time_prompt": true,
     "parallel_strategy": "DP"
   }' \
   --gpus 0 \
   --num-workers 0 \
   --timeout 60000 \
   --save-path "label/TT" \
-  --text-name-list "TT_text_empty.csv"
+  --text-name-list "TT_text.csv"

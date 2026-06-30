@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 #max_lenth从1024改为512，考虑到文本长度和模型输入限制
+import re
 from typing import Tuple
 import time
 
@@ -310,15 +311,107 @@ class MultiSegLoader(object):
         self.text = text
         self.test_labels = data
 
+    @staticmethod
+    def _extract_field(text, key):
+        pattern = r"(?:^|\s)" + re.escape(key) + r"=(.*?)(?=\s(?:service|level|event|count|sample)=|$)"
+        match = re.search(pattern, text)
+        if match is None:
+            return ""
+        return match.group(1).strip()
+
+    @staticmethod
+    def _extract_count(text):
+        count = MultiSegLoader._extract_field(text, "count")
+        try:
+            return int(float(count))
+        except ValueError:
+            return 1
+
+    @staticmethod
+    def _is_abnormal_event(event):
+        keywords = ("failure", "exception", "retry", "error", "timeout", "fail", "reset", "refused")
+        event_text = "{} {}".format(event["event"], event["sample"]).lower()
+        return event["event"] != "normal_activity" or any(keyword in event_text for keyword in keywords)
+
+    @staticmethod
+    def _compact_events(events, include_sample, limit=5):
+        grouped = {}
+        for event in events:
+            key = (event["service"], event["event"], event["sample"] if include_sample else "")
+            grouped[key] = grouped.get(key, 0) + event["count"]
+
+        ranked = sorted(grouped.items(), key=lambda item: item[1], reverse=True)
+        parts = []
+        for (service, event_name, sample), count in ranked[:limit]:
+            text = "service={} event={} count={}".format(service, event_name, count)
+            if include_sample and sample:
+                text += " sample={}".format(sample[:120])
+            parts.append(text)
+        return "; ".join(parts)
+
     def _window_text(self, start, end):
+        text_col = "data" if "data" in self.text.columns else self.text.columns[0]
         text_data = (
             self.text[start:end]
-            .iloc[:, 0]
+            .loc[:, text_col]
             .fillna("")
             .astype(str)
             .to_list()
         )
-        return " ".join(text_data).strip()
+
+        events = []
+        invalid_text = {"", ".", "nan", "none", "null"}
+        for offset, row in enumerate(text_data):
+            row = row.strip()
+            if row.lower() in invalid_text:
+                continue
+
+            for item in row.split(";"):
+                item = item.strip()
+                if not item or item.lower() in invalid_text:
+                    continue
+
+                events.append({
+                    "offset": offset,
+                    "service": self._extract_field(item, "service"),
+                    "level": self._extract_field(item, "level"),
+                    "event": self._extract_field(item, "event"),
+                    "count": self._extract_count(item),
+                    "sample": self._extract_field(item, "sample"),
+                })
+
+        if not events:
+            return "window_size={} non_empty_steps=0 total_events=0 abnormal_events=0 normal_events=0 no_log_events=true".format(end - start)
+
+        abnormal_events = [event for event in events if self._is_abnormal_event(event)]
+        normal_events = [event for event in events if not self._is_abnormal_event(event)]
+
+        total_count = sum(event["count"] for event in events)
+        abnormal_count = sum(event["count"] for event in abnormal_events)
+        normal_count = sum(event["count"] for event in normal_events)
+        non_empty_steps = len({event["offset"] for event in events})
+
+        summary = [
+            "window_size={} non_empty_steps={} total_events={} abnormal_events={} normal_events={}".format(
+                end - start,
+                non_empty_steps,
+                total_count,
+                abnormal_count,
+                normal_count,
+            )
+        ]
+
+        if abnormal_events:
+            summary.append("abnormal_summary: {}".format(
+                self._compact_events(abnormal_events, include_sample=True)
+            ))
+
+        if normal_events:
+            summary.append("normal_summary: {}".format(
+                self._compact_events(normal_events, include_sample=False)
+            ))
+
+        return " ".join(summary)
 
     def __len__(self):
         """
