@@ -1910,3 +1910,13 @@ EWJ_text.csv,,,,,,Financial, 2126,,FALSE,mult_new_new,,2658,0.8
 MDT_text.csv,,,,,,Financial, 2186,,FALSE,mult_new_new,,2732,0.8
 Energy_text.csv,,,,,,Energy,1297,,FALSE,mult_new_new,,1622,0.8
 TT.csv,FALSE,FALSE,FALSE,FALSE,TRUE,TT,1622,7443,FALSE,large,microservice_metrics,7443,0.217923
+GAIA_dbservice1.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_dbservice1,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_dbservice2.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_dbservice2,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_webservice1.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_webservice1,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_webservice2.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_webservice2,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_logservice1.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_logservice1,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_logservice2.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_logservice2,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_mobservice1.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_mobservice1,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_mobservice2.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_mobservice2,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_redisservice1.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_redisservice1,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000
+GAIA_redisservice2.csv,FALSE,FALSE,FALSE,FALSE,TRUE,GAIA_redisservice2,7056,10080,FALSE,large,microservice_instance_metrics,10080,0.700000

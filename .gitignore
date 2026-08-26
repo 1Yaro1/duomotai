@@ -27,5 +27,13 @@ runs/
 *.pth
 *.ckpt
 
+# Local datasets and autoresearch experiment outputs
+dataset/anomaly_detect/GAIA_instances/
+dataset/anomaly_detect/data/GAIA_*.csv
+dataset/anomaly_detect/DETECT_META.csv.bak_before_gaia_*
+experiments/
+result/
+autoresearch-results/
+
 .DS_Store
 Thumbs.db
