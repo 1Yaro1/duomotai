@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "seed": 2021,
+  "metric": "affiliation_f",
+  "split": {
+    "fit_start": 0,
+    "fit_end": 5644,
+    "validation_start": 5644,
+    "validation_end": 7056,
+    "test_start": 7056,
+    "test_end": 10080
+  },
+  "anomaly_ratios": [
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    3.5,
+    4.0,
+    4.5,
+    5.0,
+    5.5,
+    6.0,
+    6.5,
+    7.0,
+    7.5,
+    8.0,
+    8.5,
+    9.0,
+    9.5,
+    10.0,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51
+  ],
+  "services": [
+    {
+      "name": "GAIA_dbservice1",
+      "series": "GAIA_dbservice1.csv",
+      "text": "GAIA_dbservice1_text.csv",
+      "channels": 20
+    },
+    {
+      "name": "GAIA_dbservice2",
+      "series": "GAIA_dbservice2.csv",
+      "text": "GAIA_dbservice2_text.csv",
+      "channels": 25
+    },
+    {
+      "name": "GAIA_webservice1",
+      "series": "GAIA_webservice1.csv",
+      "text": "GAIA_webservice1_text.csv",
+      "channels": 26
+    },
+    {
+      "name": "GAIA_webservice2",
+      "series": "GAIA_webservice2.csv",
+      "text": "GAIA_webservice2_text.csv",
+      "channels": 24
+    },
+    {
+      "name": "GAIA_logservice1",
+      "series": "GAIA_logservice1.csv",
+      "text": "GAIA_logservice1_text.csv",
+      "channels": 24
+    },
+    {
+      "name": "GAIA_logservice2",
+      "series": "GAIA_logservice2.csv",
+      "text": "GAIA_logservice2_text.csv",
+      "channels": 26
+    },
+    {
+      "name": "GAIA_mobservice1",
+      "series": "GAIA_mobservice1.csv",
+      "text": "GAIA_mobservice1_text.csv",
+      "channels": 27
+    },
+    {
+      "name": "GAIA_mobservice2",
+      "series": "GAIA_mobservice2.csv",
+      "text": "GAIA_mobservice2_text.csv",
+      "channels": 21
+    },
+    {
+      "name": "GAIA_redisservice1",
+      "series": "GAIA_redisservice1.csv",
+      "text": "GAIA_redisservice1_text.csv",
+      "channels": 25
+    },
+    {
+      "name": "GAIA_redisservice2",
+      "series": "GAIA_redisservice2.csv",
+      "text": "GAIA_redisservice2_text.csv",
+      "channels": 30
+    }
+  ],
+  "frozen_files": {
+    "dataset/anomaly_detect/DETECT_META.csv": "54253b649444623ae3bde325459a6e2f664c729962ff6cc028b96444878a9382",
+    "dataset/anomaly_detect/GAIA_instances/manifest.json": "4ac19617d31787803afb1a716fe18cadf5686507243b20ec281c2eb8f1de1fcc",
+    "scripts/autoresearch/gaia_validation_runner.py": "44135e1957ed1a737b6930eefd0320c77daa10688596d86a86983f52b3e72fa1",
+    "scripts/autoresearch/summarize_gaia_best_f1.py": "68d6eb8ef3188a63ea3f2770baaaa10141203cdf0b16b3167ead9fe3c10caab6",
+    "scripts/autoresearch/guard_gaia_protocol.py": "9ead35d42c505645fc03c64a3ef5aba940df467c9fcced307aa5907351ae88fa",
+    "scripts/run_benchmark.py": "f1a8dfce4b0092000803ea867b5b5f0578c4600ffcfb67d18a4c23f74b213832",
+    "ts_benchmark/baselines/MindTSLogged.py": "d6d7761b58ad24b28b364ae0581b936fbc3e61403e1bc792423da99afeb2e987",
+    "ts_benchmark/evaluation/metrics/classification_metrics_label.py": "e827e8c2a3186b954820f13fcd7bf1c2ef8724d5d349ca31705ba1534bd74d09",
+    "ts_benchmark/evaluation/strategy/anomaly_detect.py": "76a96e764a80930568b5c658f0100ca9d552a628a4700516e853173febb66a46"
+  }
+}
