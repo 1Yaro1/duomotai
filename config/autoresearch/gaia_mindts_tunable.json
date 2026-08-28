@@ -13,7 +13,7 @@
   "mask_ratio": 0.4,
   "n_heads": 8,
   "norm": true,
-  "num_epochs": 1,
+  "num_epochs": 3,
   "parallel_strategy": "DP",
   "patch_size": 6,
   "patience": 3,
