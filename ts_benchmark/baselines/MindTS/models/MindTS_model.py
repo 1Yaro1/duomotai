@@ -214,7 +214,7 @@ class MINDTSModel(nn.Module):
         medians = torch.median(x_enc_time, dim=2).values
         lags = self.calcute_lags(x_enc_time)
         trends = x_enc_time.diff(dim=2)
-        self.description = 'MDT datasets include numerical stock data from Yahoo Finance and news information collected from various financial news websites such as NASDAQ, Bloomberg, and others.'
+        self.description = 'GAIA contains multivariate telemetry from cloud service instances and aligned operational log text for detecting service anomalies.'
         prompt_list = []
         for b in range(x_enc_time.shape[0]):
             prompt = []
