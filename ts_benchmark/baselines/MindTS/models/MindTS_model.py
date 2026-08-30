@@ -223,13 +223,14 @@ class MINDTSModel(nn.Module):
                 max_values_str = str(max_values[b][c].tolist())
                 median_values_str = str(medians[b][c].tolist())
                 lags_values_str = str(lags[b][c].tolist())
-                patch_num_middle = self.patch_num // 2
-                first_half = trends[b][:patch_num_middle]
-                second_half = trends[b][patch_num_middle:]
+                patch_trends = trends[b][c]
+                trend_middle = patch_trends.shape[0] // 2
+                first_half = patch_trends[:trend_middle]
+                second_half = patch_trends[trend_middle:]
                 first_half_mean = first_half.mean()
                 second_half_mean = second_half.mean()
-                first_half_std = first_half.std()
-                second_half_std = second_half.std()
+                first_half_std = first_half.std(unbiased=False)
+                second_half_std = second_half.std(unbiased=False)
                 if first_half_mean > 0 and second_half_mean < 0:
                     trend = 'first upward then downward'
                 elif first_half_mean < 0 and second_half_mean > 0:
