@@ -297,7 +297,7 @@ class MINDTSModel(nn.Module):
 
         text_features = embeddings.to(torch.float32)
 
-        text_features = self.prompt_proj_hidden(text_features)
+        text_features = self.text_proj_hidden(text_features)
         text_features = rearrange(text_features, 'b m h -> b (m h)', m = 1024, h = self.d_model)
         text_features = text_features.unsqueeze(1)
         text_features = self.proj_text(text_features)
