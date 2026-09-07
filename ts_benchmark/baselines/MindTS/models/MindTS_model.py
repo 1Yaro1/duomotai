@@ -160,6 +160,12 @@ class MINDTSModel(nn.Module):
         self.transformer_block = TransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.multimodal_Transformer_Block = MultiTransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.prob_net = nn.Sequential(nn.PReLU(), nn.Linear(configs.d_model, 1), nn.Sigmoid())
+        self.log_input_mode = getattr(configs, "log_input_mode", "legacy")
+        if self.log_input_mode == "v2":
+            from ts_benchmark.baselines.MindTS.cmc_log_data import MinuteLogEncoder
+            self.minute_log_encoder = MinuteLogEncoder(
+                configs.log_semantic_dim, configs.log_count_dim, configs.d_model, configs.seq_len
+            )
 
     def random_masking(self, xb, mask_ratio):
         bs_nvars, L, d_model = xb.shape
@@ -286,22 +292,27 @@ class MINDTSModel(nn.Module):
         prompt_feature = self.proj_prompt(prompt_feature)      
 
         # -------------------------------------------------------------text Reasoning------------------------------------------------------------------------------
-        with torch.no_grad():
-            outputs = self.model(
-                input_ids=x_enc_input_ids.long(),
-                attention_mask=x_enc_attention_mask.long(),
-                output_hidden_states=True
-            )
-            embeddings = outputs.hidden_states[-1]
-            embeddings = embeddings.detach()
+        if self.log_input_mode == "v2":
+            text_features = self.minute_log_encoder(x_enc_input_ids.float(), x_enc_attention_mask.float())
+            # Match numerical flattening order (b c), including batch_size > 1.
+            text_features = text_features.repeat_interleave(self.channel_time, dim=0)
+        else:
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=x_enc_input_ids.long(),
+                    attention_mask=x_enc_attention_mask.long(),
+                    output_hidden_states=True
+                )
+                embeddings = outputs.hidden_states[-1]
+                embeddings = embeddings.detach()
 
-        text_features = embeddings.to(torch.float32)
+            text_features = embeddings.to(torch.float32)
 
-        text_features = self.prompt_proj_hidden(text_features)
-        text_features = rearrange(text_features, 'b m h -> b (m h)', m = 1024, h = self.d_model)
-        text_features = text_features.unsqueeze(1)
-        text_features = self.proj_text(text_features)
-        text_features = text_features.repeat(self.channel_time, 1, 1) 
+            text_features = self.prompt_proj_hidden(text_features)
+            text_features = rearrange(text_features, 'b m h -> b (m h)', m = 1024, h = self.d_model)
+            text_features = text_features.unsqueeze(1)
+            text_features = self.proj_text(text_features)
+            text_features = text_features.repeat(self.channel_time, 1, 1)
 
         # -------------------------------------------------------------prompt and textCross-view Attention--------------------------------------------------------
         llm_features = self.transformer_block(prompt_feature, text_features)

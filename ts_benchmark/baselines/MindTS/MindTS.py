@@ -121,6 +121,21 @@ class MindTS:
         self.seq_len = self.config.win_size
         self.lamda1 = self.config.lamda1
         self.lamda2 = self.config.lamda2
+        self.log_v2_store = None
+        log_mode = getattr(self.config, "log_input_mode", "legacy")
+        if log_mode not in {"legacy", "v2"}:
+            raise ValueError("log_input_mode must be legacy or v2")
+        if log_mode == "v2":
+            from ts_benchmark.baselines.MindTS.cmc_log_data import LogV2Store
+            self.log_v2_store = LogV2Store(self.config.log_v2_cache_dir, self.config.log_v2_service)
+            self.config.log_semantic_dim = self.log_v2_store.semantic_dim
+            self.config.log_count_dim = self.log_v2_store.count_dim
+
+    def _multi_data_provider(self, *args, **kwargs):
+        if self.log_v2_store is None:
+            return anomaly_detection_multi_data_provider(*args, **kwargs)
+        from ts_benchmark.baselines.MindTS.cmc_log_data import log_v2_provider
+        return log_v2_provider(*args, store=self.log_v2_store, **kwargs)
 
     @staticmethod
     def required_hyper_params() -> dict:
@@ -316,7 +331,7 @@ class MindTS:
             index=valid_text.index,
         )   
 
-        self.valid_data_loader = anomaly_detection_multi_data_provider(
+        self.valid_data_loader = self._multi_data_provider(
             valid_data,
             valid_text,
             batch_size=config.batch_size,
@@ -325,7 +340,7 @@ class MindTS:
             mode="val",
         )
 
-        self.train_data_loader = anomaly_detection_multi_data_provider(
+        self.train_data_loader = self._multi_data_provider(
             train_data_value,
             train_data_text,
             batch_size=config.batch_size,
@@ -444,7 +459,7 @@ class MindTS:
 
         config = self.config
 
-        self.thre_loader = anomaly_detection_multi_data_provider(
+        self.thre_loader = self._multi_data_provider(
             test_data,
             test_text,
             batch_size=config.batch_size,
@@ -581,7 +596,7 @@ class MindTS:
 
         config = self.config
 
-        self.test_data_loader = anomaly_detection_multi_data_provider(
+        self.test_data_loader = self._multi_data_provider(
             test_data,
             test_text,
             batch_size=config.batch_size,
@@ -590,7 +605,7 @@ class MindTS:
             mode="test",
         )
 
-        self.thre_loader = anomaly_detection_multi_data_provider(
+        self.thre_loader = self._multi_data_provider(
             test_data,
             test_text,
             batch_size=config.batch_size,
