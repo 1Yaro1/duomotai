@@ -671,3 +671,194 @@ class MindTS:
         Returns a string representation of the model name.
         """
         return self.model_name
+
+
+class CMCInspiredLoss(nn.Module):
+    """Opt-in candidate; the existing MindTS training/scoring path is unchanged.
+
+    Inspired by MAD-CMC, IPM 62 (2025) 104013, Eqs. (5)-(16), NOT an exact
+    reproduction. Inputs are independent sample/window representations, not
+    the four patches/channels of one window relabeled as independent samples.
+
+    Integration contract:
+      * Initialize centers from K-means on gradient-training embeddings ONLY.
+      * Build a detached P bank and pseudo-label bank on the full training
+        population; gather by stable sample IDs for each minibatch.
+      * Do not rebuild P from the minibatch, validation set, or test set.
+      * Labels here are cluster IDs, never ground-truth anomaly labels.
+      * Include this module's center parameters in the training optimizer and
+        persist centers, cluster mapping, encoders and preprocessing together.
+
+    Explicit engineering choices: mean rather than summed clustering KL;
+    average cross-modal separation over all distinct cluster pairs for K>2;
+    skip anchors lacking positive/negative peers and report their count;
+    dynamic weighting OFF by default. If enabled, map cosine to [0,1] only
+    for the fractional-power weights to avoid NaN on negative cosine values.
+    These choices must be reported as adaptations, not attributed to authors.
+    """
+
+    def __init__(self, embedding_dim, n_clusters=3, temperature=0.2,
+                 inter_weight=0.1, cluster_weight=1.0,
+                 dynamic_exponent=None, eps=1e-8):
+        super().__init__()
+        if not isinstance(embedding_dim, int) or embedding_dim < 1:
+            raise ValueError("embedding_dim must be a positive integer")
+        if not isinstance(n_clusters, int) or n_clusters < 2:
+            raise ValueError("n_clusters must be an integer >= 2")
+        if not np.isfinite(temperature) or temperature <= 0:
+            raise ValueError("temperature must be finite and positive")
+        if any(not np.isfinite(w) or w < 0 for w in (inter_weight, cluster_weight)):
+            raise ValueError("loss weights must be finite and non-negative")
+        if not np.isfinite(eps) or not 0 < eps < 0.01:
+            raise ValueError("eps must be finite and in (0, 0.01)")
+        if dynamic_exponent is not None and (
+                not np.isfinite(dynamic_exponent) or dynamic_exponent < 0):
+            raise ValueError("dynamic_exponent must be finite and non-negative")
+        self.temperature = float(temperature)
+        self.inter_weight = float(inter_weight)
+        self.cluster_weight = float(cluster_weight)
+        self.dynamic_exponent = dynamic_exponent
+        self.eps = float(eps)
+        self.centers = nn.Parameter(torch.zeros(n_clusters, embedding_dim))
+        self.register_buffer("centers_initialized", torch.tensor(False))
+
+    @staticmethod
+    def _check_matrix(value, name):
+        if not isinstance(value, torch.Tensor) or value.ndim != 2:
+            raise ValueError(f"{name} must be a 2-D tensor")
+        if not value.is_floating_point() or not torch.isfinite(value).all():
+            raise ValueError(f"{name} must contain finite floating-point values")
+        if min(value.shape) < 1:
+            raise ValueError(f"{name} must not be empty")
+
+    @torch.no_grad()
+    def initialize_centers(self, train_kmeans_centers):
+        """Caller must fit these centers on the training split, not eval data."""
+        self._check_matrix(train_kmeans_centers, "train_kmeans_centers")
+        if train_kmeans_centers.shape != self.centers.shape:
+            raise ValueError("K-means centers have the wrong shape")
+        if torch.unique(train_kmeans_centers, dim=0).shape[0] != self.centers.shape[0]:
+            raise ValueError("K-means returned duplicate centers; inspect collapse")
+        self.centers.copy_(train_kmeans_centers.to(self.centers))
+        self.centers_initialized.fill_(True)
+
+    def soft_assign(self, fused):
+        """Student-t assignments, degree of freedom 1 (paper Eq. 13)."""
+        self._check_matrix(fused, "fused")
+        if not self.centers_initialized.item():
+            raise RuntimeError("initialize centers from training K-means first")
+        if fused.shape[1] != self.centers.shape[1]:
+            raise ValueError("fused embedding dimension differs from centers")
+        if fused.device != self.centers.device or fused.dtype != self.centers.dtype:
+            raise ValueError("fused embeddings and centers must share device/dtype")
+        distances = (fused[:, None, :] - self.centers[None, :, :]).square().sum(-1)
+        log_weights = -torch.log1p(distances)
+        q = torch.softmax(log_weights, dim=1)
+        if not torch.isfinite(q).all():
+            raise ValueError("non-finite assignments; inspect embedding scale")
+        return q
+
+    @staticmethod
+    def make_train_targets(full_train_q, eps=1e-8):
+        """Detached DEC target bank (Eq. 14); NEVER call per minibatch/eval split.
+
+        A tensor cannot prove its data provenance. The integration must enforce
+        training-only IDs and record them; this helper does not certify that.
+        """
+        CMCInspiredLoss._check_matrix(full_train_q, "full_train_q")
+        if full_train_q.shape[0] < 2 or full_train_q.shape[1] < 2:
+            raise ValueError("target bank needs multiple training samples/clusters")
+        if not np.isfinite(eps) or not 0 < eps < 0.01:
+            raise ValueError("invalid eps")
+        q = full_train_q.detach()
+        if (q < 0).any() or not torch.allclose(
+                q.sum(1), torch.ones_like(q[:, 0]), atol=1e-5, rtol=1e-5):
+            raise ValueError("full_train_q rows must be probability distributions")
+        weights = q.square() / q.sum(0, keepdim=True).clamp_min(eps)
+        return (weights / weights.sum(1, keepdim=True).clamp_min(eps)).detach()
+
+    def _intra(self, features, cluster_ids):
+        unit = F.normalize(features, dim=1, eps=self.eps)
+        similarity = unit @ unit.T
+        peers = ~torch.eye(len(features), dtype=torch.bool, device=features.device)
+        same = cluster_ids[:, None] == cluster_ids[None, :]
+        positive = same & peers
+        negative = ~same & peers
+        valid = positive.any(1) & negative.any(1)
+        if not valid.any():
+            return features.sum() * 0, valid.sum()
+        logits = similarity / self.temperature
+        if self.dynamic_exponent is not None:
+            bounded = ((similarity.detach() + 1) / 2).clamp(self.eps, 1-self.eps)
+            base = torch.where(same, 1-bounded, bounded)
+            # Stop-gradient weighting is an explicit stability adaptation.
+            logits = base.pow(self.dynamic_exponent) * logits
+        # Select valid rows before logsumexp: avoid -inf - -inf and NaN gradients.
+        numerator = logits[valid].masked_fill(~positive[valid], -torch.inf)
+        denominator = logits[valid].masked_fill(~peers[valid], -torch.inf)
+        value = (torch.logsumexp(denominator, 1) -
+                 torch.logsumexp(numerator, 1)).mean()
+        return value, valid.sum()
+
+    def _inter(self, metric_features, log_features, cluster_ids):
+        ids = torch.unique(cluster_ids)
+        if len(ids) < 2:
+            return (metric_features.sum() + log_features.sum()) * 0
+        metric_centers = torch.stack([
+            metric_features[cluster_ids == key].mean(0) for key in ids])
+        log_centers = torch.stack([
+            log_features[cluster_ids == key].mean(0) for key in ids])
+        metric_centers = F.normalize(metric_centers, dim=1, eps=self.eps)
+        log_centers = F.normalize(log_centers, dim=1, eps=self.eps)
+        cross = metric_centers @ log_centers.T
+        different = ~torch.eye(len(ids), dtype=torch.bool, device=cross.device)
+        # Signed cosine, as in Eqs. 9-10: total loss may legitimately be negative.
+        return cross[different].mean() + cross.T[different].mean()
+
+    def forward(self, metric_features, log_features, fused, cluster_ids, targets):
+        """Return component losses and coverage; do not silently accept B=1."""
+        for value, name in ((metric_features, "metric_features"),
+                            (log_features, "log_features"), (fused, "fused"),
+                            (targets, "targets")):
+            self._check_matrix(value, name)
+        n = len(fused)
+        if n < 2:
+            raise ValueError("CMC needs multiple independent samples; B=1 is invalid")
+        if metric_features.shape != log_features.shape or len(metric_features) != n:
+            raise ValueError("modalities must have matched [B,D] representations")
+        if any(v.device != fused.device or v.dtype != fused.dtype
+               for v in (metric_features, log_features, targets)):
+            raise ValueError("all representations/targets must share device/dtype")
+        if (not isinstance(cluster_ids, torch.Tensor) or cluster_ids.shape != (n,)
+                or cluster_ids.dtype != torch.long or cluster_ids.device != fused.device):
+            raise ValueError("cluster_ids must be a same-device int64 [B] tensor")
+        if (cluster_ids < 0).any() or (cluster_ids >= len(self.centers)).any():
+            raise ValueError("cluster IDs are outside the configured cluster range")
+        if targets.shape != (n, len(self.centers)) or (targets < 0).any():
+            raise ValueError("targets must be non-negative [B,K] probabilities")
+        if not torch.allclose(targets.sum(1), torch.ones_like(targets[:, 0]),
+                              atol=1e-5, rtol=1e-5):
+            raise ValueError("target rows must sum to 1")
+        q = self.soft_assign(fused)
+        target = targets.detach()
+        cluster = (target * (target.clamp_min(self.eps).log() -
+                            q.clamp_min(self.eps).log())).sum(1).mean()
+        intra_metric, valid_anchors = self._intra(metric_features, cluster_ids)
+        intra_log, _ = self._intra(log_features, cluster_ids)
+        inter = self._inter(metric_features, log_features, cluster_ids)
+        total = intra_metric + intra_log + self.inter_weight * inter + self.cluster_weight * cluster
+        return {"loss": total, "intra_metric": intra_metric, "intra_log": intra_log,
+                "inter": inter, "clustering": cluster, "valid_anchors": valid_anchors,
+                "q": q}
+
+    def anomaly_score(self, fused, normal_cluster):
+        """Proposed continuous score, NOT the paper's hard fuzzy-cluster rule.
+
+        normal_cluster must be frozen using training-only cluster statistics;
+        the largest-cluster-is-normal assumption needs validation in each study.
+        This is not wired into MindTS's existing reconstruction score.
+        """
+        if (not isinstance(normal_cluster, int) or isinstance(normal_cluster, bool)
+                or not 0 <= normal_cluster < len(self.centers)):
+            raise ValueError("normal_cluster must be a valid integer cluster ID")
+        return 1 - self.soft_assign(fused)[:, normal_cluster]
