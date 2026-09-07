@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "selection_metric": "f_score",
+  "reported_selection_metric": "F1",
+  "point_adjustment": false,
+  "tie_break": "first_in_frozen_ratio_order",
+  "validation_interval": [5644, 7056],
+  "seed": 2021,
+  "test_evaluated": false,
+  "service_weighting": "equal",
+  "metrics": {"affiliation_f": "affiliation_f", "PR": "precision", "RC": "recall", "F1": "f_score", "AUC": "auc_roc", "AP": "auc_pr", "V-ROC": "VUS_ROC", "V-PR": "VUS_PR"},
+  "historical_protocol": "gaia_protocol.json remains immutable; its affiliation_f selection is NOT used by this version"
+}
