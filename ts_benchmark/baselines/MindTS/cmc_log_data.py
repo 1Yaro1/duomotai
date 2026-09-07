@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import numpy as np
@@ -13,6 +14,54 @@ from torch.utils.data import Dataset, DataLoader
 START = pd.Timestamp("2021-08-24")
 FIT_END, POOL_END, END = 4515, 5644, 7056
 SERVICES = tuple(f"GAIA_{kind}service{n}" for kind in ("db", "web", "log", "mob", "redis") for n in (1, 2))
+
+
+def load_numeric_prefix(path, expected_channels, include_label=False):
+    """Gate legacy long-form rows by ordinal BEFORE parsing feature/label values.
+
+    Original date=1..10080 encodes minute IDs, not wall-clock timestamps.
+    Keep pandas' original CSV conversion and column order for the approved
+    prefix; no interpolation, normalization, filling, or label construction.
+    """
+    import csv
+    from ts_benchmark.data.utils import process_data_df
+    selected = io.StringIO()
+    with Path(path).open("r", encoding="utf-8", newline="") as f:
+        header = f.readline()
+        if next(csv.reader([header])) != ["date", "data", "cols"]:
+            raise ValueError("Unexpected GAIA numeric CSV schema")
+        selected.write(header)
+        for line in f:
+            ordinal, sep, _ = line.partition(",")
+            if not sep or not ordinal.strip().isdigit():
+                raise ValueError("GAIA numeric CSV requires one-based integer row IDs")
+            row_id = int(ordinal)
+            if not 1 <= row_id <= 10080:
+                raise ValueError("Unexpected source row ID")
+            if row_id > END:
+                continue  # Do not parse test feature or label values.
+            fields = next(csv.reader([line]))
+            if len(fields) != 3:
+                raise ValueError("Malformed in-scope numeric row")
+            if fields[2] == "label" and not include_label:
+                continue
+            selected.write(line)
+    selected.seek(0)
+    raw = pd.read_csv(selected)
+    names = raw["cols"].unique().tolist()
+    expected = expected_channels + int(include_label)
+    if len(names) != expected or (include_label and names[-1] != "label"):
+        raise ValueError("Channel count/order differs from protocol")
+    if len(raw) != expected * END:
+        raise ValueError("Missing/extra prefix rows")
+    for i, name in enumerate(names):
+        block = raw.iloc[i * END:(i + 1) * END]
+        if not (block["cols"] == name).all() or not np.array_equal(block["date"].to_numpy(), np.arange(1, END + 1)):
+            raise ValueError("Numeric source samples/columns reordered")
+    result = process_data_df(raw)
+    if result.shape != (END, expected) or not np.isfinite(result.to_numpy()).all():
+        raise ValueError("Invalid numeric prefix")
+    return result
 
 
 def digest(path):
@@ -87,10 +136,17 @@ class LogV2Dataset(Dataset):
     def __init__(self, data, store, win_size=24, step=1, mode="train"):
         if mode not in {"train", "val", "test", "thre"} or win_size != 24 or step != 1:
             raise ValueError("Keep the frozen window=24, step=1 and loader modes")
-        index = pd.DatetimeIndex(data.index)
-        if index.tz is not None:
-            index = index.tz_convert("Asia/Shanghai").tz_localize(None)
-        minute_float = np.asarray((index - START).total_seconds()) / 60
+        index = data.index
+        if pd.api.types.is_integer_dtype(index.dtype):
+            # UnFixedDetectLabel resets the full pool once to absolute zero-based
+            # row IDs before splitting. Never reset a validation slice to zero.
+            minute_float = np.asarray(index, dtype=np.float64)
+        elif isinstance(index, pd.DatetimeIndex):
+            if index.tz is not None:
+                index = index.tz_convert("Asia/Shanghai").tz_localize(None)
+            minute_float = np.asarray((index - START).total_seconds()) / 60
+        else:
+            raise ValueError("Expected absolute integer row IDs or real GAIA timestamps")
         if len(index) < win_size or not np.isfinite(minute_float).all():
             raise ValueError("Invalid numeric time index")
         ids = minute_float.astype(np.int64)
@@ -101,6 +157,10 @@ class LogV2Dataset(Dataset):
         # A loader must not cross either held-out boundary.
         if any(ids[0] < end <= ids[-1] for end in (FIT_END, POOL_END)):
             raise ValueError("Window pool crosses a fixed split boundary")
+        lower, upper = {"train": (0, FIT_END), "val": (FIT_END, POOL_END),
+                        "test": (POOL_END, END), "thre": (POOL_END, END)}[mode]
+        if ids[0] < lower or ids[-1] >= upper:
+            raise ValueError("Loader mode and absolute split indices disagree")
         self.data = np.asarray(data.values, dtype=np.float32)
         if not np.isfinite(self.data).all():
             raise ValueError("Non-finite numeric inputs")

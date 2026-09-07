@@ -7,7 +7,9 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import numpy as np
@@ -15,6 +17,7 @@ import pandas as pd
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 
 def load_file(name, relative):
@@ -60,6 +63,7 @@ class LogV2Tests(unittest.TestCase):
                 raw = f"{stamp:%Y-%m-%d %H:%M:%S},125 | INFO | host | {service} | code.py | trace | {message}"
                 writer.writerow([i, f"{stamp:%Y-%m-%d}", service, raw])
                 i += 1
+        writer.writerow([i, "2021-08-24", "dbservice1", ""])
         cls.archive = cls.root / "fixture.zip"
         with zipfile.ZipFile(cls.archive, "w") as z:
             z.writestr(prep.MEMBER, text.getvalue())
@@ -84,6 +88,17 @@ class LogV2Tests(unittest.TestCase):
         with prep.raw_connection(self.raw / "events.sqlite") as db:
             value = db.execute("SELECT message FROM events WHERE source_order=0").fetchone()[0]
         self.assertIn('10, "ok"\nsecond line', value)
+
+    def test_empty_source_record_preserved_without_invented_minute(self):
+        with prep.raw_connection(self.raw / "events.sqlite") as db:
+            row = db.execute("SELECT service,source_date,message,reason FROM empty_messages").fetchone()
+        self.assertEqual(row, ("dbservice1", "2021-08-24", "", "empty_message_no_event_timestamp"))
+        self.assertEqual(int(self.store.counts.sum()), 6)
+
+    def test_timestamp_whitespace_and_nonempty_missing(self):
+        self.assertEqual(prep.event_position("\n 2021-08-24 00:01:30,500 | INFO"), (1, 30.5 / 60))
+        with self.assertRaises(ValueError):
+            prep.event_position("nonempty exception without timestamp")
 
     def test_no_test_rows_materialized(self):
         with prep.raw_connection(self.raw / "events.sqlite") as db:
@@ -141,6 +156,48 @@ class LogV2Tests(unittest.TestCase):
         self.assertEqual(feature.shape, (2, 24, self.store.semantic_dim + self.store.count_dim))
         self.assertEqual(present.shape, (2, 24))
         self.assertEqual(dummy.sum(), 0)
+
+    def test_actual_strategy_integer_index_mapping(self):
+        for first, mode in ((0, "train"), (4515, "val"), (5644, "test"), (5644, "thre")):
+            dated = self.data(first, 48)
+            numbered = dated.copy()
+            numbered.index = pd.RangeIndex(first, first + 48)
+            a = logs.LogV2Dataset(dated, self.store, mode=mode)
+            b = logs.LogV2Dataset(numbered, self.store, mode=mode)
+            for left, right in zip(a[0], b[0]):
+                np.testing.assert_array_equal(left, right)
+
+    def test_reset_validation_slice_refused(self):
+        bad = self.data(5644, 48).reset_index(drop=True)
+        with self.assertRaisesRegex(ValueError, "mode"):
+            logs.LogV2Dataset(bad, self.store, mode="test")
+
+    @unittest.skipUnless((ROOT / "ts_benchmark/data/utils.py").exists(), "Requires actual project dataframe converter")
+    def test_numeric_prefix_never_parses_test_or_unrequested_labels(self):
+        path = self.root / "synthetic_numeric.csv"
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["date", "data", "cols"])
+            for name in ("metric_a", "metric_b", "label"):
+                for row in range(1, 10081):
+                    value = "MUST_NOT_PARSE_TEST" if row > 7056 else ("MUST_NOT_PARSE_LABEL" if name == "label" else row / 100)
+                    writer.writerow([row, value, name])
+        result = logs.load_numeric_prefix(path, 2)
+        self.assertEqual(result.shape, (7056, 2))
+        self.assertEqual(result.iloc[0, 0], 0.01)
+        self.assertEqual(result.iloc[-1, -1], 70.56)
+
+    def test_validation_entry_defaults_to_checks_not_training(self):
+        runner = load_file("runner_v2", "scripts/autoresearch/gaia_log_v2_validation_runner.py")
+        argv = ["runner", "--cache-dir", str(self.cache)]
+        with patch.object(runner.sys, "argv", argv), patch.object(runner, "configuration", return_value=({"services": []}, {})), \
+             patch.object(runner, "run_guards") as guards, patch.object(runner, "check_inputs") as checks, \
+             patch.object(runner, "worker", side_effect=AssertionError("Training must not run")) as worker, \
+             patch.object(runner.os, "chdir"):
+            runner.main()
+        guards.assert_called_once()
+        checks.assert_called_once()
+        worker.assert_not_called()
 
     def test_bad_index_and_split_crossings_refused(self):
         for first in (4500, 5630, 7050, 7056):

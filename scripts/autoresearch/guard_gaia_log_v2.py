@@ -24,6 +24,15 @@ def main():
         raise ValueError("Preprocessing implementation/version differs from cache provenance")
     for service in module.SERVICES:
         store = module.LogV2Store(args.cache_dir, service)
+        record = manifest["services"][service]
+        measured = {"events": int(store.counts.sum()),
+                    "fit_events": int(store.counts[:4515].sum()),
+                    "templates": store.count_dim - 1,
+                    "missing_minutes": int((~store.present).sum()),
+                    "unknown_events": int(store.counts[:, 0].sum()),
+                    "unknown_validation_events": int(store.counts[5644:, 0].sum())}
+        if any(record.get(key) != value for key, value in measured.items()):
+            raise ValueError(f"{service}: manifest counts do not match arrays")
         print(json.dumps({"service": service, "rows": len(store.counts),
                           "templates_including_unknown": store.count_dim,
                           "semantic_dim": store.semantic_dim}))

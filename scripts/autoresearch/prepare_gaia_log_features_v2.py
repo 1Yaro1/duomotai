@@ -65,7 +65,9 @@ def raw_connection(path):
 
 
 def event_position(message):
-    match = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d+))?", message)
+    # Leading formatting whitespace is not part of the timestamp. Keep the
+    # original message unchanged in the raw store.
+    match = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d+))?", message.lstrip())
     if not match:
         raise ValueError("Business message has no valid leading timestamp")
     stamp = datetime.strptime(match[1], "%Y-%m-%d %H:%M:%S")
@@ -95,6 +97,8 @@ def extract(source, output, progress_every=1_000_000):
         db.execute("CREATE TABLE events (source_order INTEGER PRIMARY KEY, record_id TEXT, "
                    "service TEXT, minute INTEGER CHECK(minute>=0 AND minute<7056), "
                    "position REAL, message TEXT, excluded INTEGER CHECK(excluded IN (0,1)))")
+        db.execute("CREATE TABLE empty_messages (source_order INTEGER PRIMARY KEY, record_id TEXT, "
+                   "service TEXT, source_date TEXT, message TEXT, reason TEXT)")
         # csv.reader handles quoted commas and multi-line messages correctly.
         csv.field_size_limit(32 * 1024 * 1024)
         with archive.open(MEMBER) as binary:
@@ -108,7 +112,20 @@ def extract(source, output, progress_every=1_000_000):
                 # Source ZIP contains other dates. Gate by date/timestamp before
                 # inspecting business content; never materialize test features.
                 if row["service"] in SERVICES and "2021-08-24" <= row["datetime"][:10] <= "2021-08-28":
-                    minute, position = event_position(row["message"])
+                    if not row["message"].strip():
+                        # An empty database row has no log event or minute to
+                        # recover. Preserve it separately, never invent a time.
+                        db.execute("INSERT INTO empty_messages VALUES (?,?,?,?,?,?)",
+                                   (ordinal, row["id"], row["service"], row["datetime"],
+                                    row["message"], "empty_message_no_event_timestamp"))
+                        quality["empty_message_rows_preserved"] += 1
+                        continue
+                    try:
+                        minute, position = event_position(row["message"])
+                    except ValueError:
+                        write_json(output / "unresolved_record.json", {"source_order": ordinal, **row})
+                        raise ValueError(f"Nonempty message lacks timestamp at source record {ordinal}; "
+                                         "saved unresolved_record.json; cache remains unusable") from None
                     if 0 <= minute < END:
                         excluded = int(any(x in row["message"].lower() for x in CONTROL))
                         batch.append((ordinal, row["id"], row["service"], minute, position,
@@ -121,6 +138,8 @@ def extract(source, output, progress_every=1_000_000):
                     batch.clear()
                 if (ordinal + 1) % progress_every == 0:
                     print(json.dumps({"stage": "extract", "scanned_records": ordinal + 1,
+                                      "last_source_date": row["datetime"][:10],
+                                      "uncompressed_bytes_read": binary.tell(),
                                       "kept_by_service": dict(quality),
                                       "elapsed_seconds": round(time.monotonic() - started, 1)}), flush=True)
             if batch:
@@ -133,6 +152,7 @@ def extract(source, output, progress_every=1_000_000):
     if sha256(source) != source_hash:
         raise RuntimeError("Source archive changed during extraction")
     result = {"schema_version": 2, "complete": True, "source_sha256": source_hash,
+              "extractor_sha256": sha256(__file__),
               "source_member": MEMBER, "timezone": "Asia/Shanghai", "start": START.isoformat(),
               "end_exclusive": END, "services": list(SERVICES), "counts": dict(quality),
               "database_sha256": sha256(db_path), "test_features_created": False}
@@ -160,11 +180,14 @@ def build_service(db, service, embed):
     if service not in SERVICES:
         raise ValueError("Unknown service")
     miner = make_miner()
+    print(json.dumps({"stage": "fit_templates", "service": service, "fit_end_exclusive": FIT_END}), flush=True)
     query = "SELECT minute,message FROM events WHERE service=? AND excluded=0 AND minute<? ORDER BY minute,position,source_order"
     fit_events = 0
     for minute, message in db.execute(query, (service, FIT_END)):
         miner.add_log_message(normalize(message))
         fit_events += 1
+        if fit_events % 100000 == 0:
+            print(json.dumps({"stage": "fit_templates", "service": service, "fit_events": fit_events}), flush=True)
     if fit_events == 0:
         raise ValueError(f"No gradient-training business events for {service}")
     before = template_snapshot(miner)

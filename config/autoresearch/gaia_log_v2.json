@@ -2,6 +2,7 @@
   "schema_version": 2,
   "stage": "data_and_interface_checks_only",
   "enabled": false,
+  "baseline_model_config_sha256": "56ec07f7cf39b42b376d87cb4a460720ac323265ec71c2b9619b426c20bc7238",
   "seed": 2021,
   "services": ["GAIA_dbservice1", "GAIA_dbservice2", "GAIA_webservice1", "GAIA_webservice2", "GAIA_logservice1", "GAIA_logservice2", "GAIA_mobservice1", "GAIA_mobservice2", "GAIA_redisservice1", "GAIA_redisservice2"],
   "gradient_train": [0, 4515],
