@@ -120,16 +120,19 @@ class LogV2Store:
         if not np.allclose(self.mean, train.mean(0), atol=1e-6) or not np.allclose(self.std, expected_std, atol=1e-6):
             raise ValueError("Count scaler was not fitted on gradient training only")
         self.semantic_dim, self.count_dim = self.semantics.shape[1], g
+        # Fixed pointwise transformations only; no fitting on held-out rows.
+        # Cache them once instead of repeating the same matrix product for
+        # heavily overlapping windows in every epoch.
+        counts = self.counts.astype(np.float32)
+        total = counts.sum(1, keepdims=True)
+        semantic = (counts @ self.semantics) / np.maximum(total, 1.0)
+        scaled = (np.log1p(counts) - self.mean) / self.std
+        self.features = np.concatenate([semantic, scaled], axis=1).astype(np.float32)
 
     def window(self, start, length):
         if not isinstance(start, (int, np.integer)) or length <= 0 or start < 0 or start + length > END:
             raise ValueError("Window outside approved train/validation interval")
-        counts = self.counts[start:start + length].astype(np.float32)
-        total = counts.sum(1, keepdims=True)
-        semantic = (counts @ self.semantics) / np.maximum(total, 1.0)
-        scaled = (np.log1p(counts) - self.mean) / self.std
-        features = np.concatenate([semantic, scaled], axis=1).astype(np.float32)
-        return features, self.present[start:start + length].astype(np.float32)
+        return self.features[start:start + length].copy(), self.present[start:start + length].astype(np.float32)
 
 
 class LogV2Dataset(Dataset):

@@ -60,6 +60,15 @@ def configuration():
         raise ValueError("Baseline hyperparameters changed: this must remain a log-only ablation")
     if candidate.get("cmc_loss_enabled") is not False or candidate.get("seed") != 2021:
         raise ValueError("CMC must remain disabled and seed fixed")
+    frozen = {"gradient_train": [0, 4515], "early_stopping": [4515, 5644],
+              "proposal_validation": [5644, 7056], "count_scaler_fit_interval": [0, 4515],
+              "window": 24, "generate_test_features": False,
+              "semantic_encoder_frozen": True,
+              "loss_and_anomaly_score": "unchanged_reconstruction_baseline"}
+    if any(candidate.get(key) != value for key, value in frozen.items()):
+        raise ValueError("Candidate declaration differs from the fixed log-only protocol")
+    if candidate.get("services") != [s["name"] for s in protocol["services"]]:
+        raise ValueError("Candidate service order/list differs from the frozen protocol")
     return protocol, baseline
 
 

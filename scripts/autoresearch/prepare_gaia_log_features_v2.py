@@ -76,12 +76,18 @@ def event_position(message):
     return int(delta // 60), (stamp.second + fraction) / 60.0
 
 
-@lru_cache(maxsize=65536)
 def normalize(message):
     # Preserve severity and full message body; no character/token truncation.
     # Complete unmodified message remains available in events.sqlite.
     parts = message.split("|", 6)
     body = (parts[1].strip() + " " + parts[-1]) if len(parts) == 7 else message
+    return normalize_body(body)
+
+
+@lru_cache(maxsize=65536)
+def normalize_body(body):
+    # Cache after removing timestamp/trace metadata: repeated business text
+    # must not miss the pure-function cache just because its time changed.
     for pattern, replacement in MASKS:
         body = re.sub(pattern, replacement, body)
     return re.sub(r"\s+", " ", body).strip() or "<EMPTY>"
@@ -262,6 +268,8 @@ class FrozenBert:
         # Pin actual local weights/tokenizer/config, not just a mutable model name.
         files = [p for p in self.path.iterdir() if p.is_file() and p.suffix in (".json", ".txt", ".bin", ".safetensors")]
         return {"model_path": str(self.path), "files_sha256": {p.name: sha256(p) for p in files},
+                "device": self.device, "torch_version": version("torch"),
+                "transformers_version": version("transformers"),
                 "type": "bert", "frozen": True, "pooling": "all_non_special_tokens_chunked_mean",
                 "hidden_size": self.model.config.hidden_size, "svd": False}
 

@@ -137,6 +137,25 @@ class LogV2Tests(unittest.TestCase):
         self.assertEqual(present.sum(), 0)
         self.assertEqual(features[:, :self.store.semantic_dim].sum(), 0)
 
+    def test_cached_features_equal_pointwise_reference(self):
+        for start in (0, 4500, 5644):
+            counts = self.store.counts[start:start + 24].astype(np.float32)
+            semantic = (counts @ self.store.semantics) / np.maximum(counts.sum(1, keepdims=True), 1)
+            scaled = (np.log1p(counts) - self.store.mean) / self.store.std
+            reference = np.concatenate([semantic, scaled], axis=1)
+            result, _ = self.store.window(start, 24)
+            np.testing.assert_allclose(result, reference, atol=1e-6, rtol=1e-6)
+            result[:] = 100
+            again, _ = self.store.window(start, 24)
+            np.testing.assert_allclose(again, reference, atol=1e-6, rtol=1e-6)
+
+    def test_normalization_cache_ignores_timestamp_not_content(self):
+        prep.normalize_body.cache_clear()
+        a = "2021-08-24 00:00:01 | INFO | host | service | file | trace-a | message 123"
+        b = "2021-08-24 00:01:01 | INFO | host | service | file | trace-b | message 123"
+        self.assertEqual(prep.normalize(a), prep.normalize(b))
+        self.assertEqual(prep.normalize_body.cache_info().hits, 1)
+
     def data(self, first, n):
         return pd.DataFrame(np.zeros((n, 2), dtype=np.float32),
                             index=pd.date_range(logs.START + pd.Timedelta(minutes=first), periods=n, freq="min"))
