@@ -8,6 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -76,6 +77,64 @@ def seed():
 
 
 class ResumeTests(unittest.TestCase):
+    def test_batch8_actual_mindts_with_stub_llm(self):
+        # Real MindTS encoders/fusion/heads/backprop; stub only external LLM/tokenizer.
+        import importlib
+        module = importlib.import_module("ts_benchmark.baselines.MindTS.models.MindTS_model")
+        from ts_benchmark.baselines.MindTS.MindTS import MINDTSConfig
+        from ts_benchmark.baselines.MindTS.contrastive_loss import dual_contrast
+        class Backbone(torch.nn.Module):
+            def forward(self, input_ids, **kwargs):
+                hidden = torch.arange(1536).float().reshape(1, 1, -1).expand(*input_ids.shape, -1) / 1536
+                return SimpleNamespace(hidden_states=[hidden])
+        class Causal(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = Backbone()
+        def tokenize(prompts, **kwargs):
+            return {"input_ids": torch.zeros(len(prompts), 128, dtype=torch.long),
+                    "attention_mask": torch.ones(len(prompts), 128, dtype=torch.long)}
+        configs = MINDTSConfig(batch_size=8, seq_len=24, enc_in_time=2, patch_size=6, stride=6,
+            d_model=16, d_ff=8, n_heads=2, e_layers=1, log_input_mode="v2",
+            log_semantic_dim=4, log_count_dim=3, contrastive_enabled=True,
+            contrast_hidden=8, contrast_dim=4, contrast_dropout=.05)
+        with patch.object(module.AutoConfig, "from_pretrained", return_value=SimpleNamespace()), \
+             patch.object(module.AutoTokenizer, "from_pretrained", return_value=tokenize), \
+             patch.object(module.AutoModelForCausalLM, "from_pretrained", return_value=Causal()):
+            model = module.MINDTSModel(configs).train()
+        x, log, present = torch.randn(8, 24, 2), torch.randn(8, 24, 7), torch.ones(8, 24)
+        out, _, _, _, views = model(x, log, present, return_contrast=True)
+        self.assertEqual(out.shape, x.shape)
+        self.assertEqual(views["ma"].shape, (8, 4))
+        terms = dual_contrast(views, torch.arange(8)*32, present)
+        loss = (out-x).square().mean() + terms["intra_metric"] + terms["intra_log"] + terms["inter"]
+        loss.backward()
+        for component in (model.time_patch_encoder, model.minute_log_encoder,
+                          model.metric_contrast_head, model.log_contrast_head):
+            self.assertTrue(any(p.grad is not None and torch.isfinite(p.grad).all()
+                                and p.grad.abs().sum() > 0 for p in component.parameters()))
+
+    def test_runner_resume_service_routing(self):
+        from scripts.autoresearch.gaia_web_b8_runner import service_mode, resource_hashes
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "GAIA_webservice1"
+            self.assertEqual(service_mode(root, name), "fresh")
+            directory = root / "checkpoints" / name
+            directory.mkdir(parents=True)
+            with self.assertRaises(ValueError):
+                service_mode(root, name)
+            (directory / "last.pt").touch()
+            self.assertEqual(service_mode(root, name), "resume")
+            (directory / "evaluation_start.pt").touch()
+            self.assertEqual(service_mode(root, name), "replay")
+            resources = root / "resources/deepseek"
+            resources.mkdir(parents=True)
+            (resources / "config.json").write_text("{}")
+            before = resource_hashes(root)
+            (resources / "config.json").write_text('{"changed":true}')
+            self.assertNotEqual(before, resource_hashes(root))
+
     def test_real_trainer_mid_epoch_resume(self):
         for objective in ("dual", "legacy_control"):
             with self.subTest(objective=objective), tempfile.TemporaryDirectory() as tmp:
