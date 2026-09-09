@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "experiment": "GAIA-D1-db-dev-log-v2-dual-contrast",
+  "paper_relation": "D1 dbservice group with project splits/evaluation; not strict paper reproduction",
+  "services": [
+    "GAIA_dbservice1",
+    "GAIA_dbservice2"
+  ],
+  "seed": 2021,
+  "gradient_train": [
+    0,
+    4515
+  ],
+  "early_stopping": [
+    4515,
+    5644
+  ],
+  "validation": [
+    5644,
+    7056
+  ],
+  "test_used": false,
+  "batch_size": 8,
+  "num_epochs": 3,
+  "contrastive_enabled": true,
+  "contrast_hidden": 128,
+  "contrast_dim": 64,
+  "contrast_dropout": 0.05,
+  "contrast_temperature": 0.2,
+  "contrast_min_negatives": 1,
+  "intra_weight": 0.1,
+  "inter_weight": 0.1,
+  "negative_rule": "same_service_and_nonoverlapping_training_windows",
+  "queue": false,
+  "clustering": false,
+  "early_stop_monitor": "fixed_rng_reconstruction_mse",
+  "checkpoint_every": 50,
+  "checkpoint_policy": "first_step_then_every_50_steps_and_every_epoch; best; evaluation_start",
+  "selection_metric": "f_score",
+  "service_weighting": "equal_over_exactly_two_db_instances",
+  "llm_memory_efficient": true
+}

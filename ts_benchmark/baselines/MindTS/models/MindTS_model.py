@@ -25,6 +25,22 @@ def prompt_median_values(patches):
     return torch.median(patches.detach().cpu(), dim=2).values
 
 
+@torch.no_grad()
+def frozen_prompt_last_hidden(causal_lm, input_ids, attention_mask):
+    """Retain only the final representation, with the original eager math.
+
+    Old SDPA attention fell back to eager when output_attentions=True. Simply
+    disabling attentions on an SDPA model would switch algorithms, so fail closed
+    unless the model was constructed explicitly with eager attention.
+    """
+    if causal_lm.config._attn_implementation != "eager":
+        raise ValueError("Memory-efficient prompt path requires explicit eager attention")
+    outputs = causal_lm.model(input_ids=input_ids, attention_mask=attention_mask,
+                              output_hidden_states=False, output_attentions=False,
+                              use_cache=False, return_dict=True)
+    return outputs.last_hidden_state.detach()
+
+
 class Transpose(nn.Module):
     def __init__(self, *dims, contiguous=False): 
         super().__init__()
@@ -167,10 +183,14 @@ class MINDTSModel(nn.Module):
         self.deepseek_config.output_attentions = True
         self.deepseek_config.output_hidden_states = True
         self.tokenizer = AutoTokenizer.from_pretrained(resource_path, trust_remote_code=True)
+        self.llm_memory_efficient = getattr(configs, "llm_memory_efficient", False)
+        if self.llm_memory_efficient and not getattr(configs, "contrastive_enabled", False):
+            raise ValueError("Memory optimization is opt-in for the contrastive experiment only")
+        attention_kwargs = {"attn_implementation": "eager"} if self.llm_memory_efficient else {}
         if getattr(configs, "initialize_from_checkpoint", False):
-            self.model = AutoModelForCausalLM.from_config(self.deepseek_config)
+            self.model = AutoModelForCausalLM.from_config(self.deepseek_config, **attention_kwargs)
         else:
-            self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config)
+            self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config, **attention_kwargs)
         self.transformer_block = TransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.multimodal_Transformer_Block = MultiTransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.prob_net = nn.Sequential(nn.PReLU(), nn.Linear(configs.d_model, 1), nn.Sigmoid())
@@ -298,16 +318,19 @@ class MINDTSModel(nn.Module):
             # New mode needs hidden states only. The LM vocabulary projection is
             # unused and can allocate tens of GiB at batch=8. Keep the identical
             # backbone call/config/RNG; do not change dtype or split the batch.
-            prompt_model = self.model.model if self.contrastive_enabled else self.model
-            outputs = prompt_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True
-            )
-            embeddings = outputs.hidden_states[-1]
-            embeddings = embeddings.detach() 
+            if self.llm_memory_efficient:
+                embeddings = frozen_prompt_last_hidden(self.model, input_ids, attention_mask)
+            else:
+                prompt_model = self.model.model if self.contrastive_enabled else self.model
+                outputs = prompt_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True
+                )
+                embeddings = outputs.hidden_states[-1].detach()
+                del outputs
 
-        del input_ids, attention_mask, outputs
+        del input_ids, attention_mask
 
         total_prompts = len(all_prompts)
         batch_size_prompt = len(prompt_list[0])

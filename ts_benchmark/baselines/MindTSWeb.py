@@ -20,11 +20,13 @@ from ts_benchmark.baselines.MindTS.utils.tools import adjust_learning_rate
 
 
 class MindTSWeb(MindTSLogged):
+    allowed_services = ("GAIA_webservice1", "GAIA_webservice2")
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         c = self.config
-        if c.log_v2_service not in ("GAIA_webservice1", "GAIA_webservice2"):
-            raise ValueError("Independent web-only experiment; cannot silently expand scope")
+        if c.log_v2_service not in self.allowed_services:
+            raise ValueError("Service outside this trainer's approved two-instance scope")
         if c.batch_size != 8 or c.seq_len != 24 or c.num_epochs != 3:
             raise ValueError("Expected approved batch=8, window=24, epochs=3")
         if c.parallel_strategy not in (None, "DP") or torch.cuda.device_count() > 1:
