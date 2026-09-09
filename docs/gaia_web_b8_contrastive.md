@@ -97,6 +97,27 @@ full-dataset guard. Use no whole-dataset hash scan in this workflow.
 
 ## Commands (server repository root)
 
+### Verification record, 2026-09-09
+
+On the server's existing Python3.10.12 / Torch2.4.1+cu121 environment with CUDA
+hidden: 12 contrast/checkpoint unit tests + 4 trainer/model integration tests +
+4 unchanged point-F1 runner tests passed. The integration suite checks both
+objectives' mid-epoch resume, exact synthetic RNG replay, real MindTS batch8
+encoder/fusion gradients with a **stub LLM**, and tiny Qwen hidden-only equality.
+These are synthetic checks, not GAIA model-quality results.
+
+Both web services passed cached-input preflight (7056 prefix points each,
+4492 training windows, 1106 early-stop windows, 1389 overlapping validation
+windows and 58 nonoverlapping scoring windows). The inherited loader's internal
+mode name `test` means proposal-validation windows in this adapter, not access
+to the held-out final-test suffix.
+
+Not verified: actual full-LLM batch8 GPU capacity, real GAIA checkpoint/score
+replay, or model quality. GPU was occupied by other jobs, which were not changed.
+The old synthetic log-preprocessing suite could not run in this environment
+because `drain3` is absent; no package/environment changes were made. Existing
+log-v2 feature caches load successfully without that build-time dependency.
+
 CPU checks, no GAIA training:
 
 ```bash
