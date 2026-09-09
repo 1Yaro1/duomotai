@@ -15,6 +15,16 @@ DEEPSEEK_PATH = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def prompt_median_values(patches):
+    """Prompt-only statistic: retain lower-median semantics, without CUDA indices.
+
+    These values become Python strings, never differentiable model features.
+    Copy the already-normalized patches unchanged; do not recompute normalization
+    on CPU or alter RNG/determinism settings. Return CPU values for .tolist().
+    """
+    return torch.median(patches.detach().cpu(), dim=2).values
+
+
 class Transpose(nn.Module):
     def __init__(self, *dims, contiguous=False): 
         super().__init__()
@@ -232,7 +242,8 @@ class MINDTSModel(nn.Module):
 
         min_values = torch.min(x_enc_time, dim=2)[0]
         max_values = torch.max(x_enc_time, dim=2)[0]
-        medians = torch.median(x_enc_time, dim=2).values
+        medians = (prompt_median_values(x_enc_time) if self.contrastive_enabled
+                   else torch.median(x_enc_time, dim=2).values)
         lags = self.calcute_lags(x_enc_time)
         trends = x_enc_time.diff(dim=2)
         self.description = 'MDT datasets include numerical stock data from Yahoo Finance and news information collected from various financial news websites such as NASDAQ, Bloomberg, and others.'
