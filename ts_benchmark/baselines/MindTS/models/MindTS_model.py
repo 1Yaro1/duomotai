@@ -151,12 +151,16 @@ class MINDTSModel(nn.Module):
         self.llm_layers = 6
 
         # Load LLM config
-        self.deepseek_config = AutoConfig.from_pretrained(DEEPSEEK_PATH)
+        resource_path = getattr(configs, "replay_resource_dir", DEEPSEEK_PATH)
+        self.deepseek_config = AutoConfig.from_pretrained(resource_path)
         self.deepseek_config.num_hidden_layers = self.llm_layers
         self.deepseek_config.output_attentions = True
         self.deepseek_config.output_hidden_states = True
-        self.tokenizer = AutoTokenizer.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config)    
+        self.tokenizer = AutoTokenizer.from_pretrained(resource_path, trust_remote_code=True)
+        if getattr(configs, "initialize_from_checkpoint", False):
+            self.model = AutoModelForCausalLM.from_config(self.deepseek_config)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config)
         self.transformer_block = TransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.multimodal_Transformer_Block = MultiTransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.prob_net = nn.Sequential(nn.PReLU(), nn.Linear(configs.d_model, 1), nn.Sigmoid())
@@ -166,6 +170,15 @@ class MINDTSModel(nn.Module):
             self.minute_log_encoder = MinuteLogEncoder(
                 configs.log_semantic_dim, configs.log_count_dim, configs.d_model, configs.seq_len
             )
+        self.contrastive_enabled = getattr(configs, "contrastive_enabled", False)
+        if self.contrastive_enabled:
+            if self.log_input_mode != "v2":
+                raise ValueError("Dual contrast requires log v2")
+            from ts_benchmark.baselines.MindTS.contrastive_loss import WindowContrastHead
+            head_args = dict(hidden=configs.contrast_hidden, projection=configs.contrast_dim,
+                             dropout=configs.contrast_dropout)
+            self.metric_contrast_head = WindowContrastHead(self.patch_num, self.d_model, **head_args)
+            self.log_contrast_head = WindowContrastHead(self.seq_len, self.d_model, **head_args)
 
     def random_masking(self, xb, mask_ratio):
         bs_nvars, L, d_model = xb.shape
@@ -194,7 +207,9 @@ class MINDTSModel(nn.Module):
         return lags
     
     
-    def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask):
+    def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False):
+        if return_contrast and not self.contrastive_enabled:
+            raise ValueError("Contrast heads not enabled")
         # -------------------------------------------------------------Input data normalization--------------------------------------------------------------------
         means = x_enc_time.mean(1, keepdim=True).detach()
         x_enc_time = x_enc_time - means
@@ -269,7 +284,11 @@ class MINDTSModel(nn.Module):
         attention_mask = prompt_tokens["attention_mask"].to(self.device)
 
         with torch.no_grad():
-            outputs = self.model(
+            # New mode needs hidden states only. The LM vocabulary projection is
+            # unused and can allocate tens of GiB at batch=8. Keep the identical
+            # backbone call/config/RNG; do not change dtype or split the batch.
+            prompt_model = self.model.model if self.contrastive_enabled else self.model
+            outputs = prompt_model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_hidden_states=True
@@ -294,6 +313,12 @@ class MINDTSModel(nn.Module):
         # -------------------------------------------------------------text Reasoning------------------------------------------------------------------------------
         if self.log_input_mode == "v2":
             text_features = self.minute_log_encoder(x_enc_input_ids.float(), x_enc_attention_mask.float())
+            if return_contrast:
+                metric_tokens = time_features_patch_normal.reshape(
+                    B, self.channel_time, self.patch_num, self.d_model).mean(1)
+                ma, mb = self.metric_contrast_head(metric_tokens)
+                la, lb = self.log_contrast_head(text_features)
+                contrast_views = dict(ma=ma, mb=mb, la=la, lb=lb)
             # Match numerical flattening order (b c), including batch_size > 1.
             text_features = text_features.repeat_interleave(self.channel_time, dim=0)
         else:
@@ -344,9 +369,10 @@ class MINDTSModel(nn.Module):
         # -------------------------------------------------------------Inverse normalization-----------------------------------------------------------------------
         output = output * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len + self.seq_len, 1))
         output = output + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len + self.seq_len, 1))
-        return output, logits_per_time, logits_per_text, total_mask
+        result = (output, logits_per_time, logits_per_text, total_mask)
+        return (*result, contrast_views) if return_contrast else result
 
     
-    def forward(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask):
-        outputs, logits_per_time, logits_per_text, total_mask = self.Multimodal_Time_Series(x_enc_time, x_enc_input_ids, x_enc_attention_mask)
-        return outputs, logits_per_time, logits_per_text, total_mask
+    def forward(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False):
+        return self.Multimodal_Time_Series(
+            x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=return_contrast)
