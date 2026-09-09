@@ -97,6 +97,33 @@ full-dataset guard. Use no whole-dataset hash scan in this workflow.
 
 ## Commands (server repository root)
 
+### GPU follow-up: median compatibility fix, 2026-09-09
+
+The first actual GPU probe failed at CUDA `torch.median(..., dim=2)` under
+strict determinism, before backward. With user approval, only the new-mode
+prompt median now uses detached CPU copies of already-normalized patches.
+Lower-median semantics are preserved; no seed, loss, batch, or determinism
+setting changed. Legacy mode still calls its original CUDA median.
+
+Four new median tests pass. CPU replacement vs original CUDA reference matched
+exactly in values and prompt strings across **all 4492 gradient-training windows
+of each web instance** (web1: 467168 medians; web2: 431232). The reference operator
+is allowed temporarily only inside the diagnostic test, not in model execution.
+The previous 20 unit/integration/F1 regression tests also pass.
+
+The authorized single rerun passed median generation but failed in the Qwen2 MLP
+with CUDA OOM, before backward/optimizer update. The GPU was initially idle.
+At failure: process memory 22.70 GiB, requested allocation 3.55 GiB, free GPU
+memory 830.62 MiB; PyTorch allocated 18.63 GiB and reserved-but-unallocated
+3.59 GiB. These are failure-time readings, not a successful step's peak-memory
+measurement. Process exit1, no automatic retry, GPU released. **Batch8 is not yet
+resource-validated**, no complete GAIA training or real score replay has run.
+
+Logs are outside the repository at
+`/home/xuke/dyao/autoresearch-tools/gaia/runs/web-b8-probe-20260909-medianfix/`.
+Further memory-management changes and another probe require a new user decision;
+do not silently lower batch or relax deterministic checks.
+
 ### Verification record, 2026-09-09
 
 On the server's existing Python3.10.12 / Torch2.4.1+cu121 environment with CUDA
