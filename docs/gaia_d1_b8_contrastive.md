@@ -86,3 +86,31 @@ Web checkpoints/results fail D1 identity checks and must not be reused as D1 run
 
 Historical random gates/masks and tail20 zero-padding remain unchanged. Model
 quality and checkpoint score replay must be validated after authorized training.
+
+## Verification on 2026-09-09
+
+Candidate source commit: `dec5df4862173f897462002ec7b81d55fe142c41`.
+Both cache preflights passed. Four new tests and twenty existing contrastive,
+resume and F1-runner tests passed. The actual six-layer frozen LLM check produced
+exactly equal final hidden states and CPU/CUDA RNG states in train and eval on
+the tested padded synthetic inputs (batch8, 128tokens, FP32). This is bounded
+equivalence evidence, not an exhaustive proof for every possible input.
+
+Both real-data batch8 probes completed forward, backward, gradient checks and
+one Adam update with exit0 on RTX4090. Each used a separate process.
+
+| Service | Step seconds | Peak allocated MiB | Peak reserved MiB |
+| --- | ---: | ---: | ---: |
+| GAIA_dbservice1 | 2.713 | 13568.639 | 15992 |
+| GAIA_dbservice2 | 2.926 | 16162.998 | 19188 |
+
+These are disposable single-batch checks, not full training or evaluation.
+Timings exclude model loading and do not predict complete experiment duration.
+No validation F1 was computed, no final-test data was used, and no trained
+checkpoint was persisted by these probes. Full checkpoint persistence and
+score replay still require verification during/after an authorized full run.
+GPU memory returned to 0MiB after completion.
+
+Server evidence directory:
+`/home/xuke/dyao/autoresearch-tools/gaia/runs/d1-b8-memory-check-20260909/`.
+It contains `equivalence.log` and per-service `runner.log` / `exit.status`.
