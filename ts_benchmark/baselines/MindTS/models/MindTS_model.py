@@ -237,7 +237,11 @@ class MINDTSModel(nn.Module):
         return lags
     
     
-    def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False):
+    def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False,
+                               fixed_patch_mask=None, deterministic_gate=False):
+        if fixed_patch_mask is not None or deterministic_gate:
+            if self.training or return_contrast or fixed_patch_mask is None or not deterministic_gate:
+                raise ValueError("Deterministic scoring requires eval, a fixed mask and a deterministic gate")
         if return_contrast and not self.contrastive_enabled:
             raise ValueError("Contrast heads not enabled")
         # -------------------------------------------------------------Input data normalization--------------------------------------------------------------------
@@ -249,7 +253,11 @@ class MINDTSModel(nn.Module):
 
         # -------------------------------------------------------------Series patching and masking-----------------------------------------------------------------
         x_enc_time_patch_normal, _ = self.patch_embedding(x_enc_time.permute(0, 2, 1))
-        x_enc_time_patch_mask, _, _, _ = self.random_masking(x_enc_time_patch_normal, self.mask_ratio)
+        if fixed_patch_mask is None:
+            x_enc_time_patch_mask, _, _, _ = self.random_masking(x_enc_time_patch_normal, self.mask_ratio)
+        else:
+            from ts_benchmark.baselines.MindTS.deterministic_scoring import apply_fixed_patch_mask
+            x_enc_time_patch_mask = apply_fixed_patch_mask(x_enc_time_patch_normal, fixed_patch_mask)
 
         # -------------------------------------------------------------Time Encoder--------------------------------------------------------------------------------
         time_features_patch_normal, attns = self.time_patch_encoder(x_enc_time_patch_normal)    #[B*C, N, D]
@@ -390,7 +398,10 @@ class MINDTSModel(nn.Module):
             total_mask_prob = torch.cat([inv_probs, total_mask], dim=-1)
         else:
             total_mask_prob = total_mask.softmax(dim=-1)
-        total_mask_reparameterize = torch.nn.functional.gumbel_softmax(torch.log(total_mask_prob + 1e-6), tau = 1, hard = True)[...,1]
+        if deterministic_gate:
+            total_mask_reparameterize = total_mask_prob[..., 1]
+        else:
+            total_mask_reparameterize = torch.nn.functional.gumbel_softmax(torch.log(total_mask_prob + 1e-6), tau = 1, hard = True)[...,1]
         total_mask_reparameterize = total_mask_reparameterize.unsqueeze(-1)
         llm_features = total_mask_reparameterize * llm_features      
 
@@ -407,6 +418,8 @@ class MINDTSModel(nn.Module):
         return (*result, contrast_views) if return_contrast else result
 
     
-    def forward(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False):
+    def forward(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False,
+                fixed_patch_mask=None, deterministic_gate=False):
         return self.Multimodal_Time_Series(
-            x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=return_contrast)
+            x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=return_contrast,
+            fixed_patch_mask=fixed_patch_mask, deterministic_gate=deterministic_gate)
