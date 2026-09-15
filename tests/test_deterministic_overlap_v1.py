@@ -82,6 +82,25 @@ class ScoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AbsoluteWindowDataset(np.zeros((30, 2)), 5640, Logs())
 
+    def test_checkpoint_config_restores_properties_without_parameter_changes(self):
+        from ts_benchmark.baselines.MindTS.MindTS import MINDTSConfig
+        from scripts.autoresearch.score_db_overlap_v1 import restore_model_config
+        original = MINDTSConfig(batch_size=8, seq_len=24, lr=0.001)
+        saved = vars(original).copy()
+        self.assertNotIn("pred_len", saved)
+        restored = restore_model_config(saved)
+        self.assertIsInstance(restored, MINDTSConfig)
+        self.assertEqual(vars(restored), saved)
+        self.assertEqual(restored.pred_len, original.pred_len)
+        self.assertEqual(restored.learning_rate, original.learning_rate)
+        self.assertEqual(restored.model_name, original.model_name)
+        self.assertEqual(restored.pred_len, 0)
+
+    def test_checkpoint_config_does_not_silently_fill_missing_parameters(self):
+        from scripts.autoresearch.score_db_overlap_v1 import restore_model_config
+        with self.assertRaises(ValueError):
+            restore_model_config({"batch_size": 8})
+
     def test_prefix_skips_unparseable_suffix_without_decoding(self):
         path = Path(__file__).resolve().parents[1] / "scripts/autoresearch/extract_db_prefix_once.py"
         spec = importlib.util.spec_from_file_location("prefix_once", path)

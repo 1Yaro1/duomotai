@@ -13,7 +13,6 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +40,17 @@ def tensor_identity(first, second):
         a, b = first[name], second[name]
         assert a.shape == b.shape and a.dtype == b.dtype, name
         assert a.contiguous().reshape(-1).view(torch.uint8).numpy().tobytes() == b.contiguous().reshape(-1).view(torch.uint8).numpy().tobytes(), name
+
+
+def restore_model_config(saved):
+    """Restore historical class properties without adding/changing saved values."""
+    from ts_benchmark.baselines.MindTS.MindTS import MINDTSConfig
+    config = MINDTSConfig(**saved)
+    if vars(config) != saved:
+        raise ValueError("Restoring config would add or change checkpoint parameters")
+    if config.pred_len != 0 or config.learning_rate != config.lr or config.model_name != "MindTS":
+        raise ValueError("Historical configuration property semantics changed")
+    return config
 
 
 def main():
@@ -130,7 +140,7 @@ def main():
         raise ValueError("Environment differs from audited run; no automatic parameter changes")
     from ts_benchmark.baselines.MindTS.cmc_log_data import LogV2Store
     from ts_benchmark.baselines.MindTS.models.MindTS_model import MINDTSModel
-    config = SimpleNamespace(**best["config"])
+    config = restore_model_config(best["config"])
     config.initialize_from_checkpoint = True
     config.replay_resource_dir = str(resources)
     model = MINDTSModel(config)
