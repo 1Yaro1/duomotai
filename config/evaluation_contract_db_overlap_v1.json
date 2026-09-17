@@ -1,0 +1,264 @@
+{
+  "completion": {
+    "deterministic_overlap_v1_tests_passed": true,
+    "deterministic_overlap_v1_unit_tests_passed": true,
+    "evaluation_contract_frozen": true,
+    "event_diagnosis_complete": true,
+    "historical_metrics_verified": true,
+    "ready_for_unimodal_baselines": true
+  },
+  "deterministic_overlap_v1": {
+    "accumulator_dtype": "float64",
+    "admission_free_gpu_mib": 21000,
+    "aggregation": "mean over three masked observations per window point; overlap-add then mean over covering windows; mean channels",
+    "anomaly_ratios": "0.5 through 10 in 0.5 steps, then 11 through 51 in 1 steps: 61 candidates",
+    "automatic_parameter_changes_or_retries": false,
+    "batch_size": 8,
+    "channel_aggregation": "mean",
+    "checkpoint": "existing best.pt only",
+    "coverage": "each output point must be covered, save window and masked-observation counts",
+    "error": "squared reconstruction error only at masked positions in training StandardScaler units",
+    "gate": "deterministic soft probability of keep class; no hard Gumbel sampling",
+    "mask_dependence": "fixed bank, invariant to global RNG and window visitation history",
+    "masked_only_squared_error": true,
+    "masked_patch_pairs_in_order": [
+      [
+        0,
+        1
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        0,
+        3
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        2,
+        3
+      ]
+    ],
+    "model_compute_precision": "unchanged checkpoint/reference float32 path; no AMP",
+    "overlap_add_reduction": "mean",
+    "patch_num": 4,
+    "patch_size": 6,
+    "patch_stride": 6,
+    "percentile_method": "numpy linear",
+    "point_adjustment": false,
+    "prediction_comparison": "score > actual threshold",
+    "preserved_limitations": [
+      "full-window normalization",
+      "full-window statistical prompts",
+      "historical financial description in prompts"
+    ],
+    "required_repeat": "two full train+validation scoring passes, compare every saved array bytewise, change RNG state between passes",
+    "score_protocol": "deterministic_overlap_v1",
+    "scoring_function": "score_series for BOTH percentile calibration and final validation predictions",
+    "selection": "ordinary point F1 maximum on proposal validation; first ratio in frozen order wins ties",
+    "selection_rule": "maximum ordinary point F1 on proposal validation; first frozen-order candidate wins ties",
+    "six_mask_bank": true,
+    "step": 1,
+    "tail_padding": false,
+    "threshold_candidate_count": 61,
+    "threshold_candidates": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0,
+      6.5,
+      7.0,
+      7.5,
+      8.0,
+      8.5,
+      9.0,
+      9.5,
+      10.0,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51
+    ],
+    "threshold_pool": "4515 unique training-point scores concatenated with 1412 unique validation-point scores; labels excluded",
+    "validation_length": 1412,
+    "window": 24
+  },
+  "diagnostic_artifacts": [
+    "event_boundaries.csv",
+    "fp_distance.csv",
+    "fp_categories.csv",
+    "event_metrics.csv",
+    "channel_error_summary.csv",
+    "fp_top_channels.csv",
+    "recurring_false_alarm_channels.csv",
+    "channel_error_by_outcome.csv",
+    "score_correlations.csv",
+    "score_distribution_summary.csv",
+    "threshold_sensitivity.csv",
+    "near_optimal_plateau.csv",
+    "historical_best.csv",
+    "consistency_checks.json"
+  ],
+  "diagnostic_definitions": {
+    "FP_distance": "integer distance to nearest true positive point; disjoint bins 0-1,2-3,4-5,6-10,>10",
+    "boundary_expansion_FP": "FP in a predicted run that also overlaps a true run",
+    "boundary_offset": "predicted minus true; negative start is early, positive end is late",
+    "event_iou": "mean best-match IoU over all true runs, unmatched true runs assigned zero",
+    "event_matching": "best IoU predicted run per true run, earliest predicted run on ties; many-to-many hit accounting",
+    "event_precision": "predicted runs overlapping any true run / all predicted runs",
+    "event_recall": "true runs overlapping any predicted run / all true runs",
+    "events": "maximal contiguous positive runs, inclusive start/end, one index equals one minute",
+    "false_alarm_episode": "predicted run overlapping no true run",
+    "far_independent_FP": "FP in a nonoverlapping predicted run, farther than 10 minutes from any true run",
+    "near_optimal": "F1 >= best_F1 - 0.01; width is contiguous sampled component containing the best candidate, no interpolation",
+    "threshold_sensitivity": "adjacent candidate F1 change, threshold slope, prediction flips; plus diagnostic +/-1% and +/-5% threshold perturbations, not new selection candidates"
+  },
+  "disclosures": {
+    "full_window_instance_normalization": true,
+    "full_window_statistical_prompt_mask_access": "The existing full-window statistical prompt can access statistics from positions that are masked for reconstruction.",
+    "future_context_may_be_used": true,
+    "gate_difference_from_historical": "deterministic_overlap_v1 uses a deterministic soft gate; historical scoring used a hard Gumbel gate.",
+    "interpretation_guardrail": "Deterministic results are checkpoint rescoring results and must not be described as an improvement caused by model retraining.",
+    "offline_non_causal_scoring": true
+  },
+  "execution_policy": {
+    "automatic_retry_or_parameter_change_allowed": false,
+    "exception_fallback_score_allowed": false,
+    "fail_fast": true,
+    "test_used": false
+  },
+  "frozen_at_utc": "2026-09-17T08:14:12.089847+00:00",
+  "frozen_from_draft_sha256": "9f661a5f59fc6189e891ebd99bdbcbe6028dad3e5dcc422a171170cf94d826f1",
+  "git": {
+    "branch": "codex/db-deterministic-overlap-v1",
+    "scoring_code_commit": "b542ec8e66afd53ebf21be71dd2059815844dda6",
+    "working_tree_clean_at_freeze": true
+  },
+  "historical": {
+    "checkpoint_relation": "best.pt weights byte-identical to evaluation_start.pt for both services",
+    "ordinary_mean_best_f1": 0.4847552447552447,
+    "padded_points": 20,
+    "results_immutable": true,
+    "source": "existing byte-verified validation arrays",
+    "tail_padding_present": true
+  },
+  "historical_replay_allowed": false,
+  "input_artifacts": {
+    "analysis_script_sha256": "cdb5ab4f951fe7ca5cc8169c1b3411f82aaab6c734a85362e9007816f5409bfc",
+    "prefix_canonical_array_sha256": {
+      "GAIA_dbservice1": "64ff6c22df98b3c114c3f1a2fbb6bf396ac8a5fcb6071ae8a3832848b18317ef",
+      "GAIA_dbservice2": "cad67969d89227fba35f9b54997af8eecc6179197eb1db699bcaf3cff9f97ac6"
+    },
+    "prefix_only_cache_sha256": {
+      "GAIA_dbservice1": "617fe398bf528d9851b09abdea936104df071f190249090cac33aeeb291253e4",
+      "GAIA_dbservice2": "d370805deff0db3931f8532be74fbff049c01897462296e5f1d64e0c1bbffb5a"
+    },
+    "sha256": {
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-contrast-stattext-audit-20260910T084500Z/replay/GAIA_dbservice1.validation_arrays.npz": "844d1d6b0058457756c0291381e58f72c0efd6af2d8f3da733377ecb22da0fb8",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-contrast-stattext-audit-20260910T084500Z/replay/GAIA_dbservice2.validation_arrays.npz": "acde53e09967cfc380770e1f1284e59e41c6e6a0bdc7f1154353d3f6c1fbe9ba",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-deterministic-score-20260915-attempt2/GAIA_dbservice1/pass1.npz": "e271b3f29910638409231a87dd47ef9f80cfa5644d1bd45b889e2961440c3ae6",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-deterministic-score-20260915-attempt2/GAIA_dbservice1/pass2.npz": "e271b3f29910638409231a87dd47ef9f80cfa5644d1bd45b889e2961440c3ae6",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-deterministic-score-20260915-attempt2/GAIA_dbservice1/result.json": "45e47c81884c9a3bef82046807e5ca36b206880bcc0b314a52e8a91a350a602d",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-deterministic-score-db2-20260916T161856Z/GAIA_dbservice2/pass1.npz": "c30c17aba760bc90abfa1f3d83b4c18483b8fdd0c85736160ed440c63ee03431",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-deterministic-score-db2-20260916T161856Z/GAIA_dbservice2/pass2.npz": "c30c17aba760bc90abfa1f3d83b4c18483b8fdd0c85736160ed440c63ee03431",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-deterministic-score-db2-20260916T161856Z/GAIA_dbservice2/result.json": "2ec3d897e2726bb301e690f7cdb4c99052c9effb1a2042da9a251eb52688c420",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-evaluation-contract-20260914/evaluation_contract.draft.json": "9f661a5f59fc6189e891ebd99bdbcbe6028dad3e5dcc422a171170cf94d826f1",
+      "/home/xuke/dyao/autoresearch-tools/gaia/runs/db-evaluation-contract-20260914/prefix-only/prefix_manifest.json": "2979bb5aacec7ab36d1c0196f7a5edc32ac2b88dbb2b8720e27a9d7ce7bea443"
+    }
+  },
+  "input_source": "prefix-only cache with pre-existing historical canonical-byte SHA256 identity",
+  "model_comparison": {
+    "additional_reported_metric": [
+      "affiliation_f",
+      "AUC",
+      "VUS-ROC"
+    ],
+    "auxiliary_metrics": [
+      "Precision",
+      "Recall",
+      "Point-F1"
+    ],
+    "primary_metrics": [
+      "AP",
+      "VUS-PR"
+    ],
+    "service_aggregation": "equal-service arithmetic macro average"
+  },
+  "raw_csv_reopen_allowed": false,
+  "schema_version": 2,
+  "seed_reference": 2021,
+  "services": [
+    "GAIA_dbservice1",
+    "GAIA_dbservice2"
+  ],
+  "splits": {
+    "early_stopping": [
+      4515,
+      5644
+    ],
+    "gradient_training": [
+      0,
+      4515
+    ],
+    "proposal_validation": [
+      5644,
+      7056
+    ]
+  },
+  "status": "FROZEN",
+  "test_used": false,
+  "training_updates_allowed": 0
+}

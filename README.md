@@ -37,6 +37,19 @@ sh ./scripts/univariate_detection/detect_label/MDT_script/MindTS.sh
 sh ./scripts/multivariate_detection/detect_label/Weather_script/MindTS.sh
 ```
 
+### GAIA DB deterministic evaluation extension
+
+The branch `codex/db-deterministic-overlap-v1` contains an opt-in,
+evaluation-only scoring path for the existing GAIA DB-service checkpoints. It
+uses step-1 overlap-add, a fixed six-mask bank, masked-only reconstruction
+error, a deterministic soft gate, full-length output, and no tail padding.
+
+See [the protocol note](./docs/deterministic_overlap_v1.md) and the
+[frozen evaluation contract](./config/evaluation_contract_db_overlap_v1.json).
+Historical results remain unchanged. Scores produced by this protocol are
+checkpoint rescoring results and must not be described as gains caused by model
+retraining.
+
 ## Results
 Extensive experiments on 6 real-world datasets demonstrate that MindTS achieves state-of-the-art performance:
 
