@@ -125,7 +125,14 @@ class MindTS:
         log_mode = getattr(self.config, "log_input_mode", "legacy")
         if log_mode not in {"legacy", "v2"}:
             raise ValueError("log_input_mode must be legacy or v2")
-        if log_mode == "v2":
+        if log_mode == "v2" and getattr(self.config, "defer_log_store", False):
+            # Baseline B0/B1/B2 must not materialize real log features.  Their
+            # fixed dimensions come from the pre-training contract; B3/B4 load
+            # a split-aware store later in their dedicated trainer.
+            if min(getattr(self.config, "log_semantic_dim", 0),
+                   getattr(self.config, "log_count_dim", 0)) < 1:
+                raise ValueError("Deferred log-v2 mode requires frozen feature dimensions")
+        elif log_mode == "v2":
             from ts_benchmark.baselines.MindTS.cmc_log_data import LogV2Store
             self.log_v2_store = LogV2Store(self.config.log_v2_cache_dir, self.config.log_v2_service)
             self.config.log_semantic_dim = self.log_v2_store.semantic_dim

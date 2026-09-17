@@ -135,6 +135,77 @@ class LogV2Store:
         return self.features[start:start + length].copy(), self.present[start:start + length].astype(np.float32)
 
 
+class BaselineLogView:
+    """Split-safe log source used by the frozen DB baseline family.
+
+    ``unused`` and ``null`` never own or access a LogV2Store. ``shifted`` maps
+    each metric minute to source_log_index=(minute-split_start+240) mod
+    split_length + split_start, so no log event can cross a split boundary.
+    """
+    SOURCES = {"unused", "null", "shifted", "aligned"}
+    SPLITS = ((0, FIT_END), (FIT_END, POOL_END), (POOL_END, END))
+
+    def __init__(self, source, *, store=None, semantic_dim=768, count_dim=12, shift=240):
+        if source not in self.SOURCES or min(semantic_dim, count_dim) < 1:
+            raise ValueError("Invalid baseline log view")
+        if source in {"aligned", "shifted"}:
+            if store is None or (store.semantic_dim, store.count_dim) != (semantic_dim, count_dim):
+                raise ValueError("Real-log views require the frozen matching LogV2Store")
+        elif store is not None:
+            raise ValueError("Metric-only/null controls must not materialize a real log store")
+        if source == "shifted" and shift != 240:
+            raise ValueError("The shifted-log control is frozen at +240 minutes")
+        self.source, self.store = source, store
+        self.semantic_dim, self.count_dim = semantic_dim, count_dim
+        self.feature_dim, self.shift = semantic_dim + count_dim, int(shift)
+
+    @classmethod
+    def _split(cls, start, length):
+        end = start + length
+        for lower, upper in cls.SPLITS:
+            if lower <= start < end <= upper:
+                return lower, upper
+        raise ValueError("Log window crosses or leaves a frozen split")
+
+    def window(self, start, length):
+        lower, upper = self._split(int(start), int(length))
+        if self.source in {"unused", "null"}:
+            return (np.zeros((length, self.feature_dim), dtype=np.float32),
+                    np.zeros(length, dtype=np.float32))
+        if self.source == "aligned":
+            return self.store.window(start, length)
+        minute = np.arange(start, start + length, dtype=np.int64)
+        source_index = lower + ((minute - lower + self.shift) % (upper - lower))
+        features = self.store.features[source_index].copy()
+        present = self.store.present[source_index].astype(np.float32)
+        return features, present
+
+
+class BaselineWindowDataset(Dataset):
+    """Step-one windows with absolute coordinates and an explicit log view."""
+    def __init__(self, values, absolute_start, log_view, win_size=24):
+        self.data = np.asarray(values, dtype=np.float32)
+        self.values = self.data
+        self.first = self.absolute_start = int(absolute_start)
+        self.log_view, self.win = log_view, int(win_size)
+        if self.data.ndim != 2 or len(self.data) < self.win or self.win != 24:
+            raise ValueError("Expected finite N x C values and frozen window=24")
+        if not np.isfinite(self.data).all():
+            raise ValueError("Non-finite numeric inputs")
+        BaselineLogView._split(self.first, len(self.data))
+
+    def __len__(self):
+        return len(self.data) - self.win + 1
+
+    def __getitem__(self, index):
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        absolute = self.first + index
+        features, present = self.log_view.window(absolute, self.win)
+        return (self.data[index:index + self.win].copy(), features, present,
+                np.zeros(self.win, dtype=np.float32))
+
+
 class LogV2Dataset(Dataset):
     def __init__(self, data, store, win_size=24, step=1, mode="train"):
         if mode not in {"train", "val", "test", "thre"} or win_size != 24 or step != 1:

@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "status": "pretraining_frozen",
+  "training_started": false,
+  "purpose": "Fairly test whether correctly aligned real logs add value beyond numerical metrics on the two GAIA DB instances.",
+  "services": [
+    "GAIA_dbservice1",
+    "GAIA_dbservice2"
+  ],
+  "splits": {
+    "gradient_train": [0, 4515],
+    "early_stop": [4515, 5644],
+    "proposal_validation": [5644, 7056],
+    "final_test": "forbidden"
+  },
+  "input_policy": {
+    "numeric_source": "prefix-only cache only; original CSV must not be opened",
+    "prefix_cache_files": {
+      "GAIA_dbservice1": {
+        "file": "GAIA_dbservice1.prefix.npz",
+        "file_sha256": "617fe398bf528d9851b09abdea936104df071f190249090cac33aeeb291253e4",
+        "canonical_array_sha256": "64ff6c22df98b3c114c3f1a2fbb6bf396ac8a5fcb6071ae8a3832848b18317ef",
+        "rows": 7056,
+        "metric_channels": 20
+      },
+      "GAIA_dbservice2": {
+        "file": "GAIA_dbservice2.prefix.npz",
+        "file_sha256": "d370805deff0db3931f8532be74fbff049c01897462296e5f1d64e0c1bbffb5a",
+        "canonical_array_sha256": "cad67969d89227fba35f9b54997af8eecc6179197eb1db699bcaf3cff9f97ac6",
+        "rows": 7056,
+        "metric_channels": 25
+      }
+    },
+    "log_v2_manifest_sha256": "c4cd7da02ed09b5ceb652acb7611b9d0eec5d72068394a614c845febb4539033",
+    "test_used": false,
+    "validation_labels_used_for_training": false
+  },
+  "training": {
+    "first_round_seed": 2021,
+    "batch_size": 8,
+    "epochs": 3,
+    "window": 24,
+    "patch_size": 6,
+    "patch_stride": 6,
+    "mask_ratio": 0.4,
+    "optimizer": {
+      "name": "torch.optim.Adam",
+      "learning_rate": 0.0001,
+      "betas": [0.9, 0.999],
+      "eps": 1e-08,
+      "weight_decay": 0.0,
+      "amsgrad": false
+    },
+    "scheduler": {
+      "implementation": "adjust_learning_rate",
+      "lradj": "type1",
+      "effective_epoch_learning_rates": [0.0001, 0.0001, 0.00005]
+    },
+    "loss": "mean squared metric reconstruction + 1.0 * fixed information-bottleneck loss",
+    "contrastive_loss": "forbidden for B0-B4",
+    "early_stopping_metric": "fixed-RNG reconstruction MSE on [4515,5644), lower is better",
+    "early_stopping_seed": 2021,
+    "early_stopping_batch_size": 8,
+    "patience": 3,
+    "checkpoint_selection": "strictly lower early-stop reconstruction MSE; first checkpoint wins exact ties",
+    "checkpoint_policy": "last at step 1, every 50 optimizer updates and every epoch; best at improvement; evaluation_start immediately before deterministic scoring",
+    "initialization_rule": "fresh PyTorch module initialization after fixing Python/NumPy/Torch/CUDA seed; Qwen from the same frozen local pretrained snapshot; each service is initialized in a fresh process",
+    "data_order_rule": "one complete torch.randperm of all 4492 train windows per epoch using a private CPU Generator seeded seed+epoch; no drop_last; final batch size 4",
+    "train_windows": 4492,
+    "optimizer_updates_per_epoch": 562,
+    "maximum_optimizer_updates_per_service": 1686,
+    "automatic_retry_or_parameter_change": false,
+    "fail_fast": true
+  },
+  "architecture": {
+    "d_model": 256,
+    "d_ff": 8,
+    "encoder_layers": 1,
+    "attention_heads": 8,
+    "dropout": 0.1,
+    "qwen": {
+      "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+      "layers_used": 6,
+      "frozen_parameters": true,
+      "evaluation_mode_during_prompt_encoding": true,
+      "pooling": "final hidden state projected to four prompt tokens",
+      "resource_hashes": {
+        "config.json": "37bd455e9679d2959536270fed49d25cc7c290a64f6e52abb97c71345a9cee41",
+        "tokenizer.json": "88145e3c3249adc2546ede277e9819d6e405e19072456e4b521cbc724bd60773",
+        "tokenizer_config.json": "8ac8c85fb242563c2260baec0909debd69d718af6a0b3d90e6cab62b4d341cd5"
+      }
+    },
+    "bert_log_cache": {
+      "model": "bert-base-uncased",
+      "frozen": true,
+      "runtime_model_call": false,
+      "semantic_dimension": 768,
+      "template_count_dimension": 12,
+      "pooling": "all non-special tokens, chunked mean during frozen cache construction",
+      "model_safetensors_sha256": "68d45e234eb4a928074dfd868cead0219ab85354cc53d20e772753c6bb9169d3"
+    }
+  },
+  "models": {
+    "B0": {
+      "name": "MetricOnlyPure",
+      "metric_input": true,
+      "stat_prompt": false,
+      "real_log_read": false,
+      "log_source": "unused zeros",
+      "contrastive_loss": false
+    },
+    "B1": {
+      "name": "MetricOnlyStats",
+      "metric_input": true,
+      "stat_prompt": true,
+      "real_log_read": false,
+      "log_source": "unused zeros; log fusion bypassed",
+      "contrastive_loss": false
+    },
+    "B2": {
+      "name": "MetricOnlyNullLog",
+      "metric_input": true,
+      "stat_prompt": true,
+      "real_log_read": false,
+      "log_source": "all-zero feature tensor, present=0, learnable missing token",
+      "contrastive_loss": false,
+      "capacity_match": "same log encoder, fusion and reconstruction head as B3/B4"
+    },
+    "B3": {
+      "name": "MetricLogShifted",
+      "metric_input": true,
+      "stat_prompt": true,
+      "real_log_read": true,
+      "log_source": "fixed +240-minute circular source mapping independently within each split",
+      "shift_formula": "split_start + ((metric_minute - split_start + 240) mod split_length)",
+      "shift_search": false,
+      "contrastive_loss": false
+    },
+    "B4": {
+      "name": "MetricLogSimple",
+      "metric_input": true,
+      "stat_prompt": true,
+      "real_log_read": true,
+      "log_source": "correctly aligned log v2",
+      "contrastive_loss": false
+    },
+    "B5": {
+      "name": "FullDualReference",
+      "training": "historical checkpoint; never retrain in this baseline runner",
+      "score_protocol": "existing frozen deterministic_overlap_v1 outputs",
+      "causal_claim_allowed": false,
+      "reference_training_commit": "a8c7f86",
+      "interpretation": "contextual reference only; it is not a same-run single-component causal ablation"
+    }
+  },
+  "fairness": {
+    "B2_B3_B4_identical_trainable_structure": true,
+    "B2_B3_B4_only_log_content_or_time_mapping_differs": true,
+    "same_reconstruction_loss_B0_B4": true,
+    "same_training_protocol_B0_B4": true,
+    "no_model_specific_validation_tuning": true,
+    "both_services_required": true,
+    "one_service_failure_invalidates_model": true
+  },
+  "evaluation": {
+    "contract_path": "config/evaluation_contract_db_overlap_v1.json",
+    "contract_sha256": "ca2fbf7257705597488be0933e8d7bef548d94d606b3a01a8a7253badf07b3e6",
+    "score_protocol": "deterministic_overlap_v1",
+    "channel_aggregation": "mean",
+    "threshold_candidate_count": 61,
+    "threshold_selection": "maximum ordinary point F1 on proposal validation; first frozen candidate wins ties",
+    "point_adjustment": false,
+    "primary_metrics": ["AP", "VUS-PR"],
+    "auxiliary_metrics": ["Precision", "Recall", "Point-F1", "AUC", "Affiliation-F"],
+    "diagnostic_metrics": ["Event Precision", "Event Recall", "Event IoU", ">10-minute FP count", "independent false-alarm episode count", "false-alarm episodes per 1000 normal points", "recurring top-error channels"],
+    "service_aggregation": "equal-service arithmetic macro average",
+    "test_used": false
+  },
+  "decision_rules": {
+    "real_log_increment": "B4 AP must exceed both B2 and B3 on each service, and B4 VUS-PR must not be lower than either control on either service",
+    "stat_prompt_increment": "B1 AP must exceed B0 AP; report both services and macro average",
+    "dual_reference_increment": "B5 AP greater than B4 is descriptive only; because B5 is historical, it cannot alone prove a causal dual-objective effect",
+    "inspect_with_primary_metrics": true,
+    "also_check": ["far-distance FP", "Event Precision"]
+  },
+  "seed_extension_gate": {
+    "first_round_only": [2021],
+    "additional_seeds": [2022, 2023],
+    "condition": "Only after complete seed-2021 B0-B4 results: B4 must beat both B2 and B3 in AP on both services and must not reduce VUS-PR on either service; both services must succeed and test_used must remain false",
+    "report_all_seeds_not_best_seed": true
+  },
+  "known_shared_limitations": [
+    "full-window instance normalization",
+    "full-window statistical prompt can access masked-region statistics",
+    "offline/non-causal scoring can use future context",
+    "the preserved statistical prompt contains the historical financial-domain description",
+    "deterministic soft gate differs from historical hard Gumbel scoring"
+  ]
+}

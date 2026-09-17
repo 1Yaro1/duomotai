@@ -175,6 +175,14 @@ class MINDTSModel(nn.Module):
         self.d_ff = configs.d_ff    # Feedforward hidden dimension
         self.num_heads = configs.n_heads    # Number of attention heads
         self.llm_layers = 6
+        self.baseline_mode = getattr(configs, "baseline_mode", "full_dual")
+        allowed_baseline_modes = {
+            "full_dual", "metric_only_pure", "metric_only_stats",
+            "metric_only_null_log", "metric_log_shifted", "metric_log_simple",
+        }
+        if self.baseline_mode not in allowed_baseline_modes:
+            raise ValueError("Unsupported baseline mode")
+        self.use_stat_prompt = self.baseline_mode != "metric_only_pure"
 
         # Load LLM config
         resource_path = getattr(configs, "replay_resource_dir", DEEPSEEK_PATH)
@@ -184,13 +192,20 @@ class MINDTSModel(nn.Module):
         self.deepseek_config.output_hidden_states = True
         self.tokenizer = AutoTokenizer.from_pretrained(resource_path, trust_remote_code=True)
         self.llm_memory_efficient = getattr(configs, "llm_memory_efficient", False)
-        if self.llm_memory_efficient and not getattr(configs, "contrastive_enabled", False):
-            raise ValueError("Memory optimization is opt-in for the contrastive experiment only")
+        if self.llm_memory_efficient and not (
+                getattr(configs, "contrastive_enabled", False) or self.baseline_mode != "full_dual"):
+            raise ValueError("Memory optimization is opt-in for audited experiment modes only")
         attention_kwargs = {"attn_implementation": "eager"} if self.llm_memory_efficient else {}
         if getattr(configs, "initialize_from_checkpoint", False):
             self.model = AutoModelForCausalLM.from_config(self.deepseek_config, **attention_kwargs)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(DEEPSEEK_PATH, trust_remote_code=True, config=self.deepseek_config, **attention_kwargs)
+        # Statistical text is a fixed feature extractor for every new baseline.
+        # Keep the historical full-dual construction byte-compatible; B0--B4
+        # explicitly exclude Qwen weights from optimization and use eval mode.
+        if self.baseline_mode != "full_dual":
+            self.model.requires_grad_(False)
+            self.model.eval()
         self.transformer_block = TransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.multimodal_Transformer_Block = MultiTransformerBlock(self.d_model, self.num_heads, self.d_ff)
         self.prob_net = nn.Sequential(nn.PReLU(), nn.Linear(configs.d_model, 1), nn.Sigmoid())
@@ -201,6 +216,8 @@ class MINDTSModel(nn.Module):
                 configs.log_semantic_dim, configs.log_count_dim, configs.d_model, configs.seq_len
             )
         self.contrastive_enabled = getattr(configs, "contrastive_enabled", False)
+        if self.baseline_mode != "full_dual" and self.contrastive_enabled:
+            raise ValueError("B0-B4 forbid intra/inter contrastive objectives")
         if self.contrastive_enabled:
             if self.log_input_mode != "v2":
                 raise ValueError("Dual contrast requires log v2")
@@ -235,8 +252,89 @@ class MINDTSModel(nn.Module):
         corr = torch.fft.irfft(res, dim=-1)
         _, lags = torch.topk(corr, self.top_k, dim=-1)
         return lags
-    
-    
+
+    def _stat_prompt_features(self, patches):
+        """Encode the existing frozen full-window statistical prompt.
+
+        This intentionally preserves the historical prompt contents for a
+        controlled B0--B4 comparison.  The frozen evaluation contract already
+        discloses that the prompt can see values in patches masked for scoring.
+        """
+        min_values = torch.min(patches, dim=2)[0]
+        max_values = torch.max(patches, dim=2)[0]
+        medians = (prompt_median_values(patches)
+                   if self.contrastive_enabled or self.baseline_mode != "full_dual"
+                   else torch.median(patches, dim=2).values)
+        lags = self.calcute_lags(patches)
+        trends = patches.diff(dim=2)
+        self.description = 'MDT datasets include numerical stock data from Yahoo Finance and news information collected from various financial news websites such as NASDAQ, Bloomberg, and others.'
+        prompt_list = []
+        for b in range(patches.shape[0]):
+            prompt = []
+            for c in range(patches.shape[1]):
+                min_values_str = str(min_values[b][c].tolist())
+                max_values_str = str(max_values[b][c].tolist())
+                median_values_str = str(medians[b][c].tolist())
+                lags_values_str = str(lags[b][c].tolist())
+                patch_num_middle = self.patch_num // 2
+                first_half = trends[b][:patch_num_middle]
+                second_half = trends[b][patch_num_middle:]
+                first_half_mean = first_half.mean()
+                second_half_mean = second_half.mean()
+                first_half_std = first_half.std()
+                second_half_std = second_half.std()
+                if first_half_mean > 0 and second_half_mean < 0:
+                    trend = 'first upward then downward'
+                elif first_half_mean < 0 and second_half_mean > 0:
+                    trend = 'first downward then upward'
+                elif first_half_mean > 0 and second_half_mean > 0:
+                    trend = 'upwarding'
+                elif first_half_mean < 0 and second_half_mean < 0:
+                    trend = 'downwarding'
+                elif first_half_std < 0.01 and second_half_std < 0.01:
+                    trend = 'balanced'
+                else:
+                    trend = 'uncertain'
+                prompt.append(
+                    f"<|start_prompt|>Dataset description: {self.description}"
+                    f"Task description: reconstruct the {self.seq_len} steps given the previous {self.seq_len} steps information; "
+                    "Input statistics: "
+                    f"min value {min_values_str}, max value {max_values_str}, "
+                    f"median value {median_values_str}, the trend of input is {trend}, "
+                    f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
+                )
+            prompt_list.append(prompt)
+
+        all_prompts = [prompt for batch in prompt_list for prompt in batch]
+        prompt_tokens = self.tokenizer(
+            all_prompts, max_length=128, padding="max_length", truncation=True,
+            return_tensors="pt")
+        input_ids = prompt_tokens["input_ids"].to(self.device)
+        attention_mask = prompt_tokens["attention_mask"].to(self.device)
+        if self.baseline_mode != "full_dual":
+            self.model.eval()
+        with torch.no_grad():
+            if self.llm_memory_efficient:
+                embeddings = frozen_prompt_last_hidden(self.model, input_ids, attention_mask)
+            else:
+                prompt_model = self.model.model if self.contrastive_enabled else self.model
+                outputs = prompt_model(
+                    input_ids=input_ids, attention_mask=attention_mask,
+                    output_hidden_states=True)
+                embeddings = outputs.hidden_states[-1].detach()
+                del outputs
+        del input_ids, attention_mask
+        batch_size_prompt = len(prompt_list[0])
+        all_embeddings = embeddings.view(
+            -1, batch_size_prompt, embeddings.size(1), embeddings.size(2)).squeeze(2)
+        prompt_feature = self.prompt_proj_hidden(all_embeddings.to(torch.float32))
+        del embeddings, all_embeddings
+        prompt_feature = rearrange(
+            prompt_feature, 'v n m d -> v n (m d)',
+            n=self.patch_num, m=128, d=self.d_model)
+        return self.proj_prompt(prompt_feature)
+
+
     def Multimodal_Time_Series(self, x_enc_time, x_enc_input_ids, x_enc_attention_mask, return_contrast=False,
                                fixed_patch_mask=None, deterministic_gate=False):
         if fixed_patch_mask is not None or deterministic_gate:
@@ -264,93 +362,17 @@ class MINDTSModel(nn.Module):
         time_features_patch_mask, attns = self.time_patch_encoder(x_enc_time_patch_mask)    #[B*C, N, D]
 
         # -------------------------------------------------------------prompt Generation --------------------------------------------------------------------------
-        x_enc_time = x_enc_time.permute(0, 2, 1).contiguous()
-        x_enc_time = rearrange(x_enc_time, 'b c l -> (b c) l')
-        x_enc_time = x_enc_time.unfold(1, self.patch_size, self.stride) # (B * N, Patch_num, Patch_size)
-
-        min_values = torch.min(x_enc_time, dim=2)[0]
-        max_values = torch.max(x_enc_time, dim=2)[0]
-        medians = (prompt_median_values(x_enc_time) if self.contrastive_enabled
-                   else torch.median(x_enc_time, dim=2).values)
-        lags = self.calcute_lags(x_enc_time)
-        trends = x_enc_time.diff(dim=2)
-        self.description = 'MDT datasets include numerical stock data from Yahoo Finance and news information collected from various financial news websites such as NASDAQ, Bloomberg, and others.'
-        prompt_list = []
-        for b in range(x_enc_time.shape[0]):
-            prompt = []
-            for c in range(x_enc_time.shape[1]):
-                min_values_str = str(min_values[b][c].tolist())
-                max_values_str = str(max_values[b][c].tolist())
-                median_values_str = str(medians[b][c].tolist())
-                lags_values_str = str(lags[b][c].tolist())
-                patch_num_middle = self.patch_num // 2
-                first_half = trends[b][:patch_num_middle]
-                second_half = trends[b][patch_num_middle:]
-                first_half_mean = first_half.mean()
-                second_half_mean = second_half.mean()
-                first_half_std = first_half.std()
-                second_half_std = second_half.std()
-                if first_half_mean > 0 and second_half_mean < 0:
-                    trend = 'first upward then downward'
-                elif first_half_mean < 0 and second_half_mean > 0:
-                    trend = 'first downward then upward'
-                elif first_half_mean > 0 and second_half_mean > 0:
-                    trend = 'upwarding'
-                elif first_half_mean < 0 and second_half_mean < 0:
-                    trend = 'downwarding'
-                elif first_half_std < 0.01 and second_half_std < 0.01:
-                    trend = 'balanced'
-                else:
-                    trend = 'uncertain'
-
-                prompt_ = (
-                    f"<|start_prompt|>Dataset description: {self.description}"
-                    f"Task description: reconstruct the {str(self.seq_len)} steps given the previous {str(self.seq_len)} steps information; "
-                    "Input statistics: "
-                    f"min value {min_values_str}, "
-                    f"max value {max_values_str}, "
-                    f"median value {median_values_str}, "
-                    f"the trend of input is {trend}, "
-                    f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
-                )
-                prompt.append(prompt_)
-            prompt_list.append(prompt)
-        
-        # -------------------------------------------------------------prompt Reasoning---------------------------------------------------------------------------
-        all_prompts = [prompt for batch in prompt_list for prompt in batch]
-        prompt_tokens = self.tokenizer(all_prompts, max_length=128, padding="max_length", truncation=True, return_tensors="pt")
-        input_ids = prompt_tokens["input_ids"].to(self.device)
-        attention_mask = prompt_tokens["attention_mask"].to(self.device)
-
-        with torch.no_grad():
-            # New mode needs hidden states only. The LM vocabulary projection is
-            # unused and can allocate tens of GiB at batch=8. Keep the identical
-            # backbone call/config/RNG; do not change dtype or split the batch.
-            if self.llm_memory_efficient:
-                embeddings = frozen_prompt_last_hidden(self.model, input_ids, attention_mask)
-            else:
-                prompt_model = self.model.model if self.contrastive_enabled else self.model
-                outputs = prompt_model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    output_hidden_states=True
-                )
-                embeddings = outputs.hidden_states[-1].detach()
-                del outputs
-
-        del input_ids, attention_mask
-
-        total_prompts = len(all_prompts)
-        batch_size_prompt = len(prompt_list[0])
-        all_embeddings = embeddings.view(-1, batch_size_prompt, embeddings.size(1), embeddings.size(2))
-        all_embeddings = all_embeddings.squeeze(2)
-
-        prompt_feature = all_embeddings.to(torch.float32)
-        del embeddings, all_embeddings
-
-        prompt_feature = self.prompt_proj_hidden(prompt_feature)
-        prompt_feature = rearrange(prompt_feature, 'v n m d -> v n (m d)', n = self.patch_num, m = 128, d = self.d_model)
-        prompt_feature = self.proj_prompt(prompt_feature)      
+        patches = rearrange(
+            x_enc_time.permute(0, 2, 1).contiguous(), 'b c l -> (b c) l'
+        ).unfold(1, self.patch_size, self.stride)
+        if self.use_stat_prompt:
+            prompt_feature = self._stat_prompt_features(patches)
+        else:
+            # B0 consumes no statistical text.  A fixed zero conditioner keeps
+            # the downstream tensor topology without introducing another input.
+            prompt_feature = torch.zeros(
+                B * N, self.patch_num, self.d_model,
+                device=x_enc_time.device, dtype=time_features_patch_normal.dtype)
 
         # -------------------------------------------------------------text Reasoning------------------------------------------------------------------------------
         if self.log_input_mode == "v2":
@@ -382,7 +404,16 @@ class MINDTSModel(nn.Module):
             text_features = text_features.repeat(self.channel_time, 1, 1)
 
         # -------------------------------------------------------------prompt and textCross-view Attention--------------------------------------------------------
-        llm_features = self.transformer_block(prompt_feature, text_features)
+        if self.baseline_mode == "metric_only_pure":
+            llm_features = prompt_feature
+        elif self.baseline_mode == "metric_only_stats":
+            # B1 adds exactly the metric-derived statistical prompt to B0 and
+            # bypasses the real-log encoder/fusion path.
+            llm_features = prompt_feature
+        else:
+            # B2/B3/B4 are architecturally identical here; only their dataset's
+            # log content/time mapping differs.
+            llm_features = self.transformer_block(prompt_feature, text_features)
 
         # -------------------------------------------------------------time-text Similarity matrix----------------------------------------------------------------
         time_norm = F.normalize(time_features_patch_normal, p=2, dim=-1)

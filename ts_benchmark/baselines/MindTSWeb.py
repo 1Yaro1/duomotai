@@ -94,9 +94,10 @@ class MindTSWeb(MindTSLogged):
     @torch.no_grad()
     def _validation_mse(self):
         # New and paired-control modes use the same explicitly documented early-stop rule.
+        c = self.config
         rng = capture_rng()
         try:
-            torch.manual_seed(2021)
+            torch.manual_seed(getattr(c, "seed", 2021))
             self.model.eval()
             total, count = 0.0, 0
             for offset in range(0, len(self.val_dataset), 8):
@@ -124,28 +125,45 @@ class MindTSWeb(MindTSLogged):
         if getattr(self.config, "resume_checkpoint", None):
             self._restore(self.config.resume_checkpoint)
         c = self.config
+        contrastive_enabled = getattr(c, "contrastive_enabled", True)
         log_path = self.ckpt_dir / "training.jsonl"
         while self.progress["epoch"] < c.num_epochs and not self.progress["stopped"]:
             epoch = self.progress["epoch"]
             if not self.progress["order"]:
-                self.progress["order"] = epoch_order(len(self.fit_dataset), epoch)
+                self.progress["order"] = epoch_order(
+                    len(self.fit_dataset), epoch, getattr(c, "seed", 2021))
             self.model.train()
             while self.progress["next_offset"] < len(self.fit_dataset):
                 offset = self.progress["next_offset"]
+                if self.progress["global_step"] >= getattr(c, "max_optimizer_updates", math.inf):
+                    raise RuntimeError("Maximum optimizer updates exceeded; no automatic retry")
                 ids = self.progress["order"][offset:offset + 8]
                 x, log, present = self._batch(self.fit_dataset, ids)
                 self.optimizer.zero_grad(set_to_none=True)
-                out, lt, ll, mask, views = self.model(x, log, present, return_contrast=True)
+                if contrastive_enabled:
+                    out, lt, ll, mask, views = self.model(x, log, present, return_contrast=True)
+                else:
+                    out, lt, ll, mask = self.model(x, log, present, return_contrast=False)
+                    views = None
                 rec = (out - x).square().mean()
                 ib = Bottleneck_loss(mask, c.r, c.lamda)
-                starts = torch.tensor(ids, device=self.device, dtype=torch.long) + self.fit_dataset.first
-                terms = dual_contrast(views, starts, present, c.contrast_temperature, c.contrast_min_negatives)
-                if c.loss_mode == "dual":
+                if contrastive_enabled:
+                    starts = torch.tensor(ids, device=self.device, dtype=torch.long) + self.fit_dataset.first
+                    terms = dual_contrast(views, starts, present, c.contrast_temperature, c.contrast_min_negatives)
+                else:
+                    zero = rec.detach().new_zeros(())
+                    terms = dict(intra_metric=zero, intra_log=zero, inter=zero,
+                                 valid_metric_anchors=0, valid_log_anchors=0,
+                                 valid_inter_anchors=0, negative_metric_mean=0.0,
+                                 negative_log_mean=0.0)
+                if c.loss_mode == "dual" and contrastive_enabled:
                     loss = rec + c.lamda2 * ib + c.intra_weight * (terms["intra_metric"] + terms["intra_log"]) / 2 + c.inter_weight * terms["inter"]
-                elif c.loss_mode == "legacy_control":
+                elif c.loss_mode == "legacy_control" and contrastive_enabled:
                     # Same new-mode architecture/RNG/batching/early-stop/checkpoint plumbing.
                     # Only objective differs; preserve old summed CLIP for this control.
                     loss = rec + c.lamda2 * ib + c.lamda1 * clip_loss(lt, ll)
+                elif c.loss_mode == "reconstruction_ib" and not contrastive_enabled:
+                    loss = rec + c.lamda2 * ib
                 else:
                     raise ValueError("Unsupported objective")
                 if not torch.isfinite(loss):
