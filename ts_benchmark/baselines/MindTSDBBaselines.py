@@ -9,6 +9,7 @@ from ts_benchmark.baselines.MindTSWeb import MindTSWeb
 from ts_benchmark.baselines.MindTS.models.MindTS_model import MINDTSModel
 from ts_benchmark.baselines.MindTS.cmc_log_data import (
     BaselineLogView, BaselineWindowDataset, LogV2Store)
+from ts_benchmark.baselines.MindTS.deterministic_scoring import AbsoluteWindowDataset
 
 
 MODEL_SPECS = {
@@ -71,4 +72,5 @@ class MindTSDBBaseline(MindTSWeb):
     def scoring_dataset(self, scaled_values, absolute_start):
         if self.baseline_log_view is None:
             raise RuntimeError("Training preparation must establish the frozen log view")
-        return BaselineWindowDataset(scaled_values, absolute_start, self.baseline_log_view)
+        return AbsoluteWindowDataset(
+            scaled_values, absolute_start, self.baseline_log_view)

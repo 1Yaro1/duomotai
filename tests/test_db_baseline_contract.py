@@ -10,6 +10,9 @@ import numpy as np
 
 from ts_benchmark.baselines.MindTS.cmc_log_data import (
     BaselineLogView, BaselineWindowDataset)
+from ts_benchmark.baselines.MindTS.deterministic_scoring import AbsoluteWindowDataset
+from ts_benchmark.baselines.MindTSDBBaselines import MindTSDBBaseline
+from scripts.autoresearch.gaia_db_baseline_runner import validate_replay_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -64,6 +67,18 @@ class BaselineLogTests(unittest.TestCase):
         self.assertEqual(len(dataset), 1106)
         self.assertEqual(dataset.first, 4515)
         self.assertEqual(dataset[1][0].shape, (24, 5))
+        np.testing.assert_array_equal(dataset[1][3], np.zeros(24, np.float32))
+
+    def test_scoring_dataset_returns_scalar_absolute_start(self):
+        view = BaselineLogView("null", semantic_dim=2, count_dim=1)
+        trainer = object.__new__(MindTSDBBaseline)
+        trainer.baseline_log_view = view
+        dataset = trainer.scoring_dataset(np.zeros((1412, 5)), 5644)
+        self.assertIsInstance(dataset, AbsoluteWindowDataset)
+        self.assertEqual(dataset.absolute_start, 5644)
+        self.assertEqual(dataset[0][3], 5644)
+        self.assertEqual(dataset[1][3], 5645)
+        self.assertTrue(np.isscalar(dataset[1][3]))
 
 
 class ContractTests(unittest.TestCase):
@@ -104,6 +119,29 @@ class ContractTests(unittest.TestCase):
         reference = self.contract["models"]["B5"]
         self.assertIn("never retrain", reference["training"])
         self.assertFalse(reference["causal_claim_allowed"])
+
+    def test_checkpoint_replay_allows_only_dataset_interface_and_runner_repair(self):
+        stable = {
+            "contract_sha256": "contract", "evaluation_contract_sha256": "evaluation",
+            "model_id": "B0", "seed": 2021, "prefix_manifest_sha256": "prefix",
+            "log_manifest_sha256": "log", "resources": {"config.json": "resource"},
+            "source": {
+                "ts_benchmark/baselines/MindTS/deterministic_scoring.py": "score-v1",
+                "ts_benchmark/baselines/MindTS/models/MindTS_model.py": "model-v1",
+                "ts_benchmark/baselines/MindTSDBBaselines.py": "dataset-v1",
+                "scripts/autoresearch/gaia_db_baseline_runner.py": "runner-v1",
+            },
+        }
+        repaired = json.loads(json.dumps(stable))
+        repaired["source"]["ts_benchmark/baselines/MindTSDBBaselines.py"] = "dataset-v2"
+        repaired["source"]["scripts/autoresearch/gaia_db_baseline_runner.py"] = "runner-v2"
+        self.assertEqual(validate_replay_identity(stable, repaired), [
+            "scripts/autoresearch/gaia_db_baseline_runner.py",
+            "ts_benchmark/baselines/MindTSDBBaselines.py",
+        ])
+        repaired["source"]["ts_benchmark/baselines/MindTS/models/MindTS_model.py"] = "model-v2"
+        with self.assertRaisesRegex(ValueError, "Checkpoint-incompatible"):
+            validate_replay_identity(stable, repaired)
 
     def test_B2_B3_B4_have_identical_parameter_topology_and_frozen_qwen(self):
         import importlib

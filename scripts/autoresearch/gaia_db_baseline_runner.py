@@ -1,8 +1,10 @@
 """Frozen GAIA DB baseline runner.
 
-Default invocation performs preflight only.  Training requires the explicit
+Default invocation performs preflight only. Training requires the explicit
 ``--run-training`` gate, one B0--B4 model, seed 2021, a fresh repository-external
-output directory, and a clean committed worktree.  It never opens raw GAIA CSVs.
+output directory, and a clean committed worktree. A checkpoint-replay argument
+can replace training only for the audited completed B0/dbservice1 checkpoint.
+The runner never opens raw GAIA CSVs.
 """
 from __future__ import annotations
 
@@ -28,6 +30,10 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 SERVICES = ("GAIA_dbservice1", "GAIA_dbservice2")
 MODEL_IDS = ("B0", "B1", "B2", "B3", "B4", "B5")
+REPLAY_COMPATIBLE_SOURCE_CHANGES = frozenset({
+    "ts_benchmark/baselines/MindTSDBBaselines.py",
+    "scripts/autoresearch/gaia_db_baseline_runner.py",
+})
 CONTRACT = ROOT / "config/autoresearch/baseline_training_contract.json"
 EVALUATION_CONTRACT = ROOT / "config/evaluation_contract_db_overlap_v1.json"
 TUNABLE = ROOT / "config/autoresearch/gaia_mindts_tunable.json"
@@ -67,6 +73,46 @@ def code_identity():
         path = ROOT / name
         paths.append((name, digest(path)))
     return dict(paths)
+
+
+def validate_replay_identity(source, current):
+    """Allow only the audited Dataset/runner repair around unchanged weights."""
+    for key in (
+            "contract_sha256", "evaluation_contract_sha256", "model_id", "seed",
+            "prefix_manifest_sha256", "log_manifest_sha256", "resources"):
+        if source.get(key) != current.get(key):
+            raise ValueError("Replay identity mismatch: " + key)
+    if set(source.get("source", {})) != set(current.get("source", {})):
+        raise ValueError("Replay source-file identity set changed")
+    changed = sorted(
+        name for name, old_hash in source["source"].items()
+        if current["source"][name] != old_hash)
+    if not set(changed).issubset(REPLAY_COMPATIBLE_SOURCE_CHANGES):
+        raise ValueError("Checkpoint-incompatible source changes: " + ", ".join(changed))
+    return changed
+
+
+def validate_replay_source(checkpoint, run_config, current_identity):
+    checkpoint = Path(checkpoint).resolve(strict=True)
+    run_config = Path(run_config).resolve(strict=True)
+    source_snapshot = read_json(run_config)
+    source_identity = source_snapshot.get("identity", {})
+    if source_identity.get("model_id") != "B0" or source_identity.get("seed") != 2021:
+        raise ValueError("Only the failed seed-2021 B0 run can be replayed")
+    expected = run_config.parent / "checkpoints" / SERVICES[0] / "evaluation_start.pt"
+    if checkpoint != expected.resolve():
+        raise ValueError("Replay checkpoint is not dbservice1/evaluation_start.pt from its run")
+    changed = validate_replay_identity(source_identity, current_identity)
+    return {
+        "service": SERVICES[0],
+        "zero_training": True,
+        "source_run_config": str(run_config),
+        "source_run_config_sha256": digest(run_config),
+        "source_checkpoint": str(checkpoint),
+        "source_checkpoint_sha256": digest(checkpoint),
+        "source_checkpoint_identity": source_identity,
+        "compatible_source_changes": changed,
+    }
 
 
 def validate_contract(prefix_dir, log_cache):
@@ -214,7 +260,9 @@ def evaluate(service, actual, score, channel_error, ratios, thresholds, predicti
     return chosen, rows
 
 
-def model_parameters(contract, model_id, service, output, identity, log_cache):
+def model_parameters(
+        contract, model_id, service, output, identity, log_cache,
+        evaluation_checkpoint=None):
     baseline = read_json(TUNABLE)
     spec = {
         "B0": ("metric_only_pure", "unused"),
@@ -239,6 +287,8 @@ def model_parameters(contract, model_id, service, output, identity, log_cache):
         "replay_resource_dir": str(output / "resources/deepseek"),
         "initialize_from_checkpoint": False,
     })
+    if evaluation_checkpoint is not None:
+        baseline["evaluation_checkpoint"] = str(evaluation_checkpoint)
     return baseline
 
 
@@ -255,6 +305,19 @@ def run_worker(args, contract):
     if snapshot["identity"]["source"] != code_identity():
         raise ValueError("Source changed after preflight")
     service = args.worker_service
+    replay = snapshot.get("replay") if args.evaluation_checkpoint is not None else None
+    if args.evaluation_checkpoint is not None:
+        if replay is None:
+            raise ValueError("Checkpoint replay provenance is missing from run_config")
+        checkpoint = args.evaluation_checkpoint.resolve(strict=True)
+        if (service != replay.get("service")
+                or str(checkpoint) != replay.get("source_checkpoint")
+                or digest(checkpoint) != replay.get("source_checkpoint_sha256")):
+            raise ValueError("Replay checkpoint provenance changed")
+        checkpoint_identity = replay["source_checkpoint_identity"]
+    else:
+        checkpoint = None
+        checkpoint_identity = snapshot["identity"]
     record = contract["input_policy"]["prefix_cache_files"][service]
     with np.load(args.prefix_dir / record["file"], allow_pickle=False) as data:
         values = data["values"].copy()
@@ -264,14 +327,18 @@ def run_worker(args, contract):
         raise ValueError("Labels are not binary")
     train_frame = pd.DataFrame(metrics[:5644], index=np.arange(5644), columns=columns[:-1])
     parameters = model_parameters(
-        contract, args.model, service, output, snapshot["identity"], args.log_cache_dir)
+        contract, args.model, service, output, checkpoint_identity,
+        args.log_cache_dir, evaluation_checkpoint=checkpoint)
     fix_random_seed(2021)
     trainer = MindTSDBBaseline(**parameters)
     started = time.monotonic()
     trainer.detect_multi_fit(train_frame, None, None)
     if trainer.progress["global_step"] > 1686:
         raise RuntimeError("Optimizer update contract exceeded")
-    trainer._save("evaluation_start")
+    if checkpoint is None:
+        trainer._save("evaluation_start")
+    elif trainer.progress["global_step"] != 1686:
+        raise RuntimeError("Reused checkpoint does not contain all contracted optimizer updates")
     trainer.model.eval()
     scaled = trainer.scaler.transform(metrics)
     training = trainer.scoring_dataset(scaled[:4515], 0)
@@ -312,6 +379,8 @@ def run_worker(args, contract):
         "elapsed_seconds": time.monotonic() - started,
         "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
         "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+        "training_reused": checkpoint is not None,
+        "source_checkpoint_sha256": replay["source_checkpoint_sha256"] if replay else None,
         "test_used": False,
     }
     (output / service / "result.json").write_text(
@@ -349,14 +418,18 @@ def main():
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--run-training", action="store_true")
     parser.add_argument("--worker-service", choices=SERVICES, help=argparse.SUPPRESS)
+    parser.add_argument("--evaluation-checkpoint", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--reuse-evaluation-checkpoint", type=Path)
+    parser.add_argument("--reuse-run-config", type=Path)
     args = parser.parse_args()
     os.chdir(ROOT)
     args.prefix_dir = args.prefix_dir.resolve(strict=True)
     args.log_cache_dir = args.log_cache_dir.resolve(strict=True)
     contract = validate_contract(args.prefix_dir, args.log_cache_dir)
     if args.worker_service:
-        if not args.run_training or args.model not in MODEL_IDS[:5] or args.output_dir is None:
-            raise ValueError("Worker requires an explicit B0--B4 training gate")
+        modes = int(args.run_training) + int(args.evaluation_checkpoint is not None)
+        if modes != 1 or args.model not in MODEL_IDS[:5] or args.output_dir is None:
+            raise ValueError("Worker requires exactly one training or checkpoint-replay gate")
         run_worker(args, contract)
         return
     if not args.run_training:
@@ -368,6 +441,10 @@ def main():
         raise ValueError("Training requires --model and a fresh --output-dir")
     if args.model == "B5":
         raise ValueError("B5 is a frozen historical reference and must never be retrained")
+    if (args.reuse_evaluation_checkpoint is None) != (args.reuse_run_config is None):
+        raise ValueError("Checkpoint replay requires both checkpoint and source run_config")
+    if args.reuse_evaluation_checkpoint is not None and args.model != "B0":
+        raise ValueError("Only B0/dbservice1 can reuse the completed failed-run training")
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         raise ValueError("Commit and audit the baseline code before training")
     output = args.output_dir.resolve()
@@ -390,17 +467,25 @@ def main():
             "git_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         }
+        replay = None
+        if args.reuse_evaluation_checkpoint is not None:
+            replay = validate_replay_source(
+                args.reuse_evaluation_checkpoint, args.reuse_run_config, identity)
         (output / "run_config.json").write_text(json.dumps({
             "identity": identity, "contract": contract, "invocation": sys.argv,
-            "test_used": False}, indent=2), encoding="utf-8")
+            "replay": replay, "test_used": False}, indent=2), encoding="utf-8")
         for service in SERVICES:
             (output / service).mkdir()
             command = [
                 sys.executable, "-u", str(Path(__file__).resolve()),
                 "--prefix-dir", str(args.prefix_dir), "--log-cache-dir", str(args.log_cache_dir),
                 "--model", args.model, "--output-dir", str(output),
-                "--run-training", "--worker-service", service,
+                "--worker-service", service,
             ]
+            if replay is not None and service == replay["service"]:
+                command.extend(["--evaluation-checkpoint", replay["source_checkpoint"]])
+            else:
+                command.append("--run-training")
             subprocess.run(command, cwd=ROOT, check=True)
         if code_identity() != identity["source"]:
             raise RuntimeError("Source changed during the experiment")
